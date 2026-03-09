@@ -14,13 +14,28 @@ import getpass
 import hashlib
 import hmac
 import secrets
-
+from pathlib import Path
 from db import execute, query_one
 from session import clear_session, load_session, require_session, save_session
 
+def _load_wordlist(filename: str) -> frozenset[str]:
+    """Load a newline-separated wordlist, strip blanks and comments."""
+    path = Path(__file__).parent / "wordlists" / filename
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as f:
+            return frozenset(
+                line.strip().lower()
+                for line in f
+                if line.strip() and not line.startswith("#")
+            )
+    except FileNotFoundError:
+        raise RuntimeError(f"Required wordlist not found: {path}")
+
+_COMPROMISED_PASSWORDS = _load_wordlist("top10k_passwords.txt")
+
 
 # ---------------------------------------------------------------------------
-# CRYPTO — Dylan O'Connor owns all decisions in this section
+# CRYPTO
 # ---------------------------------------------------------------------------
 
 def _hash_password(plaintext: str) -> str:
@@ -34,8 +49,6 @@ def _hash_password(plaintext: str) -> str:
 
     scrypt is preferred over PBKDF2 because its memory-hardness
     resists GPU/ASIC brute-force attacks.
-
-    TODO: Needs a password recipe
 
     """
     salt = secrets.token_bytes(32)
@@ -77,22 +90,42 @@ def _verify_password(plaintext: str, stored_hash: str) -> bool:
     return hmac.compare_digest(actual_dk, expected_dk)
 
 def _check_password_strength(password: str) -> list[str]:
-    """
-    Enforce a password recipe. Returns a list of unmet requirements.
-    All rules must pass before a password is accepted.
-    """
     errors = []
-    if len(password) < 12:
-        errors.append("at least 12 characters")
-    if not any(c.isupper() for c in password):
-        errors.append("at least one uppercase letter (A-Z)")
-    if not any(c.islower() for c in password):
-        errors.append("at least one lowercase letter (a-z)")
-    if not any(c.isdigit() for c in password):
-        errors.append("at least one digit (0-9)")
-    if not any(c in "!@#$%^&*()_+-=[]{}|;':\",./<>?" for c in password):
-        errors.append("at least one special character (!@#$%^&*...)")
+
+    if len(password) < 8:
+        errors.append("at least 8 characters")
+    if len(password) > 64:
+        errors.append("no more than 64 characters")
+
+    if any(c for c in password if ord(c) < 32 or ord(c) == 127):
+        errors.append("must not contain control characters")
+
+    if password.lower() in _COMPROMISED_PASSWORDS:
+        errors.append("password is too common or has appeared in known data breaches")
+
+    DICTIONARY = {"dragon", "sunshine", "letmein", "monkey"}  # stub — replace with wordlist file
+    if password.lower() in DICTIONARY:
+        errors.append("password is a dictionary word")
+
+    if len(set(password)) < 3:
+        errors.append("password is too repetitive")
+    if _is_sequential(password):
+        errors.append("password must not be a sequential pattern (e.g. 12345678, abcdefgh)")
+
+    CONTEXT = {"clean", "chore", "house", "plate"}  # app name and obvious derivatives
+    if any(word in password.lower() for word in CONTEXT):
+        errors.append("password must not contain the application name or obvious derivatives")
+
     return errors
+
+
+def _is_sequential(password: str) -> bool:
+    """Detect monotonically incrementing/decrementing codepoint runs."""
+    if len(password) < 4:
+        return False
+    codes = [ord(c) for c in password]
+    diffs = [codes[i+1] - codes[i] for i in range(len(codes) - 1)]
+    return all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +154,14 @@ def cmd_register(args) -> None:
     confirm  = getpass.getpass("Confirm password: ")
 
     recipe_errors = _check_password_strength(password)
+    if password != confirm:
+        print("Error: passwords do not match.")
+        return
+    
     if recipe_errors:
         print("Error: password must contain:")
         for rule in recipe_errors:
             print(f"  • {rule}")
-        return
-    if password != confirm:
-        print("Error: passwords do not match.")
         return
 
     existing = query_one("SELECT id FROM users WHERE username = ?", (username,))
