@@ -8,6 +8,14 @@ Responsibilities:
   - Session management helpers
 
 Standard library only: hashlib, hmac, secrets, getpass
+
+Password strength checker follows these constraints:
+
+blacklisted passwords from:
+https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/common.txt
+https://github.com/danielmiessler/SecLists/tree/master/Passwords
+
+minumum chars: 8
 """
 
 import getpass
@@ -47,10 +55,6 @@ def _hash_password(plaintext: str) -> str:
       N=2^14 (CPU/memory cost), r=8 (block size), p=1 (parallelism)
     Salt: 32 random bytes via secrets.token_bytes (CSPRNG).
     Output: "scrypt:<hex_salt>:<hex_hash>"
-
-    scrypt is preferred over PBKDF2 because its memory-hardness
-    resists GPU/ASIC brute-force attacks.
-
     """
     salt = secrets.token_bytes(32)
     dk = hashlib.scrypt(
