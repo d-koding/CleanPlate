@@ -39,7 +39,7 @@ def _load_wordlist(filename: str) -> frozenset[str]:
     except FileNotFoundError:
         raise RuntimeError(f"Required wordlist not found: {path}")
 
-_COMPROMISED_PASSWORDS = _load_wordlist("top10k_passwords.txt")
+_COMPROMISED_PASSWORDS = _load_wordlist("10k-most-common.txt")
 _DICTIONARY = _load_wordlist("common.txt")
 
 
@@ -155,18 +155,21 @@ def cmd_register(args) -> None:
         return
 
     password = getpass.getpass("Password (min 8 chars): ")
-    confirm  = getpass.getpass("Confirm password: ")
 
     recipe_errors = _check_password_strength(password)
+
+    if recipe_errors:
+        print("Error: ")
+        for rule in recipe_errors:
+            print(f"  • {rule}")
+        return
+    
+    confirm  = getpass.getpass("Confirm password: ")
+    
     if password != confirm:
         print("Error: passwords do not match.")
         return
     
-    if recipe_errors:
-        print("Error: password must contain:")
-        for rule in recipe_errors:
-            print(f"  • {rule}")
-        return
 
     existing = query_one("SELECT id FROM users WHERE username = ?", (username,))
     if existing:

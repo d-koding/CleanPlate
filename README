@@ -102,6 +102,14 @@ SECURITY NOTES
               Salt: 32 random bytes via secrets.token_bytes (CSPRNG).
               Output: "scrypt:<hex_salt>:<hex_hash>"
 
+              Password strength checker follows these constraints:
+
+              blacklisted passwords from:
+              https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/common.txt
+              https://github.com/danielmiessler/SecLists/tree/master/Passwords
+
+              minumum chars: 8
+
   Audit log : HMAC-SHA256 chained; verify_chain() detects any tampering.
   HMAC key  : Stored in DB for prototype; move to env var for alpha.
   Session   : ~/.chorehouse_session (chmod 600); cleared on logout.
