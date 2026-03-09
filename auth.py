@@ -25,46 +25,57 @@ from session import clear_session, load_session, require_session, save_session
 
 def _hash_password(plaintext: str) -> str:
     """
-    Hash a password for storage.
+    Hash a password using scrypt (memory-hard, built into Python 3.6+).
 
-    TODO (Person 1): Replace this stub with a proper algorithm.
-    Options to research and pick from:
-      - hashlib.scrypt  (built into Python 3.6+, memory-hard)
-      - hashlib.pbkdf2_hmac  (simpler, still acceptable)
-    For now this is a placeholder SHA-256 with a random salt so the
-    rest of the system can be wired up and tested.
+    Parameters chosen per OWASP scrypt recommendations:
+      N=2^14 (CPU/memory cost), r=8 (block size), p=1 (parallelism)
+    Salt: 32 random bytes via secrets.token_bytes (CSPRNG).
+    Output: "scrypt:<hex_salt>:<hex_hash>"
 
-    Current stub:
-      salt (32 random bytes) + SHA-256(salt + password)
-      stored as "sha256:<hex_salt>:<hex_digest>"
-
-    Replace the body of this function and _verify_password below
-    before the prototype demo.
+    scrypt is preferred over PBKDF2 because its memory-hardness
+    resists GPU/ASIC brute-force attacks.
     """
     salt = secrets.token_bytes(32)
-    digest = hashlib.sha256(salt + plaintext.encode()).hexdigest()
-    return f"sha256:{salt.hex()}:{digest}"
+    dk = hashlib.scrypt(
+        plaintext.encode(),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32
+    )
+    return f"scrypt:{salt.hex()}:{dk.hex()}"
 
 
 def _verify_password(plaintext: str, stored_hash: str) -> bool:
     """
-    Verify a plaintext password against a stored hash.
-    Must stay in sync with _hash_password above.
+    Verify a plaintext password against a stored scrypt hash.
     Uses hmac.compare_digest to prevent timing attacks.
-
-    TODO (Person 1): Update this when you upgrade _hash_password.
     """
     try:
-        scheme, salt_hex, digest_hex = stored_hash.split(":")
+        scheme, salt_hex, dk_hex = stored_hash.split(":")
     except ValueError:
         return False
+
+    if scheme != "scrypt":
+        return False
+
     salt = bytes.fromhex(salt_hex)
-    expected = hashlib.sha256(salt + plaintext.encode()).hexdigest()
-    return hmac.compare_digest(expected, digest_hex)
+    expected_dk = bytes.fromhex(dk_hex)
+
+    actual_dk = hashlib.scrypt(
+        plaintext.encode(),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32
+    )
+    return hmac.compare_digest(actual_dk, expected_dk)
 
 
 # ---------------------------------------------------------------------------
-# COMMANDS — registered in main.py
+# COMMANDS
 # ---------------------------------------------------------------------------
 
 def cmd_register(args) -> None:
@@ -77,7 +88,13 @@ def cmd_register(args) -> None:
         print("Error: username cannot be empty.")
         return
 
-    # TODO (Person 1): add any additional username validation rules here
+    if len(username) < 3 or len(username) > 32:
+        print("Error: username must be between 3 and 32 characters.")
+        return
+
+    if not username.isalnum() and not all(c.isalnum() or c in "-_" for c in username):
+        print("Error: username may only contain letters, numbers, hyphens, and underscores.")
+        return
 
     password = getpass.getpass("Password (min 8 chars): ")
     confirm  = getpass.getpass("Confirm password: ")
@@ -95,7 +112,7 @@ def cmd_register(args) -> None:
         return
 
     pw_hash = _hash_password(password)
-    user_id = execute(
+    execute(
         "INSERT INTO users (username, password_hash) VALUES (?, ?)",
         (username, pw_hash)
     )
@@ -113,9 +130,13 @@ def cmd_login(args) -> None:
     row = query_one("SELECT id, password_hash FROM users WHERE username = ?",
                     (username,))
 
-    # Always run verify even if user not found, to resist timing attacks
-    stored_hash = row["password_hash"] if row else "sha256:" + "0" * 64 + ":" + "0" * 64
-    if row is None or not _verify_password(password, stored_hash):
+    # Always run verify even if user not found, to resist timing attacks.
+    # Dummy hash has valid format so scrypt always runs.
+    dummy = "scrypt:" + "00" * 32 + ":" + "00" * 32
+    stored_hash = row["password_hash"] if row else dummy
+    valid = _verify_password(password, stored_hash)
+
+    if row is None or not valid:
         print("Error: invalid username or password.")
         return
 
@@ -153,20 +174,16 @@ def cmd_whoami(args) -> None:
 # ---------------------------------------------------------------------------
 
 def register_subparsers(subparsers) -> None:
-    # register
     p = subparsers.add_parser("register", help="Create a new user account")
     p.add_argument("--username", default=None, help="Desired username")
     p.set_defaults(func=cmd_register)
 
-    # login
     p = subparsers.add_parser("login", help="Log in to ChoreHouse")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_login)
 
-    # logout
     p = subparsers.add_parser("logout", help="Log out")
     p.set_defaults(func=cmd_logout)
 
-    # whoami
     p = subparsers.add_parser("whoami", help="Show who is currently logged in")
     p.set_defaults(func=cmd_whoami)
