@@ -16,7 +16,7 @@ import hmac
 import secrets
 from pathlib import Path
 from db import execute, query_one
-from session import clear_session, load_session, require_session, save_session
+from session import clear_session, load_session, save_session
 
 def _load_wordlist(filename: str) -> frozenset[str]:
     """Load a newline-separated wordlist, strip blanks and comments."""
@@ -32,6 +32,7 @@ def _load_wordlist(filename: str) -> frozenset[str]:
         raise RuntimeError(f"Required wordlist not found: {path}")
 
 _COMPROMISED_PASSWORDS = _load_wordlist("top10k_passwords.txt")
+_DICTIONARY = _load_wordlist("common.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +104,7 @@ def _check_password_strength(password: str) -> list[str]:
     if password.lower() in _COMPROMISED_PASSWORDS:
         errors.append("password is too common or has appeared in known data breaches")
 
-    DICTIONARY = {"dragon", "sunshine", "letmein", "monkey"}  # stub — replace with wordlist file
-    if password.lower() in DICTIONARY:
+    if password.lower() in _DICTIONARY:
         errors.append("password is a dictionary word")
 
     if len(set(password)) < 3:
