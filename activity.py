@@ -136,18 +136,31 @@ def verify_chain(household_id: int) -> tuple[bool, str]:
 # NOTIFICATIONS — Person 4 owns this stub
 # ---------------------------------------------------------------------------
 
-def notify(household_id: int, message: str) -> None:
+def notify(household_id: int, message: str, exclude_user_id: int | None = None) -> None:
     """
-    Placeholder for notification logic.
+    Store a notification for each member of the household.
 
-    TODO (Person 4): Implement at least one of:
-      - Print to terminal for all members who run `chorehouse poll`
-      - Write to a per-user notification file in the home directory
-      - Send an email (smtplib is standard library)
-
-    For the prototype, just printing is fine.
+    Members will see unread notifications when they run:
+        python main.py activity poll
     """
-    print(f"[Notification] {message}")
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    members = query(
+        "SELECT user_id FROM members WHERE household_id = ?",
+        (household_id,)
+    )
+
+    for member in members:
+        user_id = member["user_id"]
+
+        if exclude_user_id is not None and user_id == exclude_user_id:
+            continue
+
+        execute(
+            """INSERT INTO notifications (user_id, household_id, message, created_at, read)
+               VALUES (?, ?, ?, ?, 0)""",
+            (user_id, household_id, message, created_at)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +202,8 @@ def cmd_complete(args) -> None:
            {"chore_id": args.chore, "title": chore["title"]})
 
     notify(chore["household_id"],
-           f"{session['username']} marked '{chore['title']}' as complete.")
+           f"{session['username']} marked '{chore['title']}' as complete.",
+           exclude_user_id=session["user_id"])
     print(f"Chore '{chore['title']}' marked as complete.")
 
 
@@ -226,7 +240,8 @@ def cmd_dispute(args) -> None:
            {"chore_id": args.chore, "complaint_id": complaint_id})
 
     notify(chore["household_id"],
-           f"{session['username']} disputed '{chore['title']}'.")
+           f"{session['username']} disputed '{chore['title']}'.",
+           exclude_user_id=session["user_id"])
     print(f"Complaint filed (id={complaint_id}). An admin will review it.")
 
 
@@ -273,8 +288,9 @@ def cmd_resolve(args) -> None:
            {"complaint_id": args.complaint, "outcome": args.outcome})
 
     notify(chore["household_id"],
-           f"Complaint on '{chore['title']}' was {args.outcome}d by {session['username']}.")
-    print(f"Complaint {args.outcome}d. Chore status is now '{new_status}'.")
+           f"Complaint on '{chore['title']}' was {args.outcome} by {session['username']}.",
+           exclude_user_id=session["user_id"])
+    print(f"Complaint {args.outcome}. Chore status is now '{new_status}'.")
 
 
 def cmd_audit(args) -> None:
@@ -315,6 +331,35 @@ def cmd_audit(args) -> None:
             print(f"       hash={hash_preview}")
 
 
+def cmd_poll(args) -> None:
+    """
+    Display unread notifications for the logged-in user.
+    Usage: python main.py activity poll
+    """
+    session = require_session()
+
+    notifications = query(
+        """SELECT id, household_id, message, created_at
+           FROM notifications
+           WHERE user_id = ? AND read = 0
+           ORDER BY created_at ASC, id ASC""",
+        (session["user_id"],)
+    )
+
+    if not notifications:
+        print("No new notifications.")
+        return
+
+    print("Notifications:\n")
+    for n in notifications:
+        print(f"[{n['created_at']}] {n['message']}")
+
+    execute(
+        "UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0",
+        (session["user_id"],)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Subparser registration
 # ---------------------------------------------------------------------------
@@ -345,3 +390,7 @@ def register_subparsers(subparsers) -> None:
     c = sub.add_parser("audit", help="View audit log for a household")
     c.add_argument("--household", type=int, required=True, metavar="HOUSEHOLD_ID")
     c.set_defaults(func=cmd_audit)
+
+    # poll
+    c = sub.add_parser("poll", help="View unread notifications")
+    c.set_defaults(func=cmd_poll)

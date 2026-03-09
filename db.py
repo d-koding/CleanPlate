@@ -101,6 +101,16 @@ def init_db() -> None:
                 resolved_by  INTEGER REFERENCES users(id),
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+                           
+            -- Notifications --------------------------------------------------
+            CREATE TABLE IF NOT EXISTS notifications (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL REFERENCES users(id),
+                household_id INTEGER NOT NULL REFERENCES households(id),
+                message      TEXT    NOT NULL,
+                created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                read         INTEGER NOT NULL DEFAULT 0
+            );
 
             -- Audit log (HMAC-chained) ---------------------------------------
             CREATE TABLE IF NOT EXISTS audit_log (
