@@ -1,6 +1,6 @@
 """
 auth.py — Identity & Access
-Owner: Person 1
+Owner: Dylan O'Connor
 
 Responsibilities:
   - User registration and login
@@ -20,7 +20,7 @@ from session import clear_session, load_session, require_session, save_session
 
 
 # ---------------------------------------------------------------------------
-# CRYPTO — Person 1 owns all decisions in this section
+# CRYPTO — Dylan O'Connor owns all decisions in this section
 # ---------------------------------------------------------------------------
 
 def _hash_password(plaintext: str) -> str:
@@ -34,6 +34,9 @@ def _hash_password(plaintext: str) -> str:
 
     scrypt is preferred over PBKDF2 because its memory-hardness
     resists GPU/ASIC brute-force attacks.
+
+    TODO: Needs a password recipe
+
     """
     salt = secrets.token_bytes(32)
     dk = hashlib.scrypt(
@@ -73,6 +76,24 @@ def _verify_password(plaintext: str, stored_hash: str) -> bool:
     )
     return hmac.compare_digest(actual_dk, expected_dk)
 
+def _check_password_strength(password: str) -> list[str]:
+    """
+    Enforce a password recipe. Returns a list of unmet requirements.
+    All rules must pass before a password is accepted.
+    """
+    errors = []
+    if len(password) < 12:
+        errors.append("at least 12 characters")
+    if not any(c.isupper() for c in password):
+        errors.append("at least one uppercase letter (A-Z)")
+    if not any(c.islower() for c in password):
+        errors.append("at least one lowercase letter (a-z)")
+    if not any(c.isdigit() for c in password):
+        errors.append("at least one digit (0-9)")
+    if not any(c in "!@#$%^&*()_+-=[]{}|;':\",./<>?" for c in password):
+        errors.append("at least one special character (!@#$%^&*...)")
+    return errors
+
 
 # ---------------------------------------------------------------------------
 # COMMANDS
@@ -99,8 +120,11 @@ def cmd_register(args) -> None:
     password = getpass.getpass("Password (min 8 chars): ")
     confirm  = getpass.getpass("Confirm password: ")
 
-    if len(password) < 8:
-        print("Error: password must be at least 8 characters.")
+    recipe_errors = _check_password_strength(password)
+    if recipe_errors:
+        print("Error: password must contain:")
+        for rule in recipe_errors:
+            print(f"  • {rule}")
         return
     if password != confirm:
         print("Error: passwords do not match.")
