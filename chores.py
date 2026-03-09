@@ -13,6 +13,8 @@ Standard library only.
 from db import execute, query, query_one
 from households import require_admin, require_membership
 from session import require_session
+from datetime import datetime, timezone
+from activity import record
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +36,19 @@ def cmd_create_chore(args) -> None:
         return
 
     # TODO (Person 3): validate due_date format more thoroughly
-    due_date    = args.due or None
+    due_date = args.due or None
+
+    if due_date:
+        try:
+            parsed_date = datetime.strptime(due_date, "%Y-%m-%d").date()
+        except ValueError:
+            print("Error: due date must be in YYYY-MM-DD format.")
+            return
+
+        if parsed_date < datetime.now(timezone.utc).date():
+            print("Error: due date cannot be in the past.")
+            return
+
     description = args.description or ""
     assigned_to = None
 
@@ -57,9 +71,12 @@ def cmd_create_chore(args) -> None:
         (args.household, title, description, assigned_to, due_date, session["user_id"])
     )
 
-    # TODO (Person 4): call audit.record() here
-    # audit.record(args.household, session["user_id"], "chore.create",
-    #              {"chore_id": chore_id, "title": title})
+    record(
+        args.household,
+        session["user_id"],
+        "chore.create",
+        {"chore_id": chore_id, "title": title}
+    )
 
     print(f"Chore '{title}' created (id={chore_id}).")
     if assigned_to:
@@ -92,9 +109,12 @@ def cmd_assign_chore(args) -> None:
     execute("UPDATE chores SET assigned_to = ? WHERE id = ?",
             (target["id"], args.chore))
 
-    # TODO (Person 4): call audit.record() here
-    # audit.record(chore["household_id"], session["user_id"], "chore.assign",
-    #              {"chore_id": args.chore, "assigned_to": args.username})
+    record(
+        chore["household_id"],
+        session["user_id"],
+        "chore.assign",
+        {"chore_id": args.chore, "assigned_to": args.username}
+    )
 
     print(f"Chore {args.chore} assigned to '{args.username}'.")
 
@@ -109,8 +129,6 @@ def cmd_list_chores(args) -> None:
     session    = require_session()
     membership = require_membership(session["user_id"], args.household)
 
-    # Build query dynamically based on filters
-    # TODO (Person 3): add more filter options if useful (e.g. --overdue)
     conditions = ["c.household_id = ?"]
     params     = [args.household]
 
@@ -121,6 +139,11 @@ def cmd_list_chores(args) -> None:
     if args.mine:
         conditions.append("c.assigned_to = ?")
         params.append(session["user_id"])
+
+    if args.overdue:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        conditions.append("c.due_date < ? AND c.status != 'complete'")
+        params.append(today)
 
     where = " AND ".join(conditions)
     rows = query(
@@ -218,6 +241,7 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--household", type=int, required=True, metavar="HOUSEHOLD_ID")
     c.add_argument("--status",    default=None, choices=["pending", "complete", "disputed"])
     c.add_argument("--mine",      action="store_true", help="Only show chores assigned to you")
+    c.add_argument("--overdue", action="store_true", help="Show overdue chores")
     c.set_defaults(func=cmd_list_chores)
 
     # show
