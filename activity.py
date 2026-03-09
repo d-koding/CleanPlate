@@ -1,0 +1,347 @@
+"""
+activity.py — Activity & Completion
+Owner: Person 4
+
+Responsibilities:
+  - Mark a chore as complete
+  - File and resolve complaints (disputes)
+  - Audit log: appending entries and verifying the chain
+  - Notification logic (stub — expand as needed)
+
+Standard library only: hashlib, hmac, json, secrets, datetime
+"""
+
+import hashlib
+import hmac
+import json
+import secrets
+from datetime import datetime, timezone
+
+from db import execute, query, query_one
+from households import get_membership, require_membership
+from session import require_session
+
+
+# ---------------------------------------------------------------------------
+# AUDIT LOG — Person 4 owns this section
+# ---------------------------------------------------------------------------
+
+def _get_or_create_hmac_key() -> bytes:
+    """
+    Return the server-side HMAC key, creating it on first call.
+
+    TODO (Person 4 + Person 1): Agree on key storage strategy.
+    Current approach: stored in the DB (convenient but means a DB dump
+    is enough to forge entries). Better options:
+      - Read from an environment variable: os.environ["AUDIT_HMAC_KEY"]
+      - Read from a file outside the DB with restricted OS permissions
+    For the prototype, DB storage is acceptable. Document the limitation.
+    """
+    row = query_one("SELECT key FROM audit_key WHERE id = 1")
+    if row is None:
+        key_hex = secrets.token_hex(32)   # 256-bit key
+        execute("INSERT INTO audit_key (id, key) VALUES (1, ?)", (key_hex,))
+        return bytes.fromhex(key_hex)
+    return bytes.fromhex(row["key"])
+
+
+def _compute_entry_hash(key: bytes, household_id: int, seq: int,
+                        timestamp: str, actor_id: int, action: str,
+                        details: str, prev_hash: str) -> str:
+    """
+    HMAC-SHA256 over all fields of a single audit entry.
+
+    The payload is a pipe-separated string of all fields so that changing
+    any single field produces a completely different hash.
+
+    TODO (Person 4): If you change the canonical format here, you must also
+    update verify_chain — they must agree on the exact byte representation.
+    """
+    payload = "|".join([
+        str(household_id), str(seq), timestamp,
+        str(actor_id), action, details, prev_hash
+    ]).encode()
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def record(household_id: int, actor_id: int, action: str, details: dict) -> None:
+    """
+    Append a tamper-evident entry to the audit log.
+
+    This is the one function the other three team members will call.
+    They do NOT need to understand the internals — just call:
+
+        from activity import record
+        record(household_id, session["user_id"], "chore.complete", {"chore_id": 7})
+
+    Call this INSIDE the same logical operation as the DB change it describes
+    so both either succeed or fail together.
+    """
+    key = _get_or_create_hmac_key()
+
+    # Find the last entry for this household to continue the chain
+    last = query_one(
+        "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
+        (household_id,)
+    )
+    seq       = (last["seq"] + 1) if last else 1
+    prev_hash = last["entry_hash"] if last else ("0" * 64)   # genesis sentinel
+
+    timestamp    = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    details_json = json.dumps(details, sort_keys=True)
+    entry_hash   = _compute_entry_hash(
+        key, household_id, seq, timestamp,
+        actor_id, action, details_json, prev_hash
+    )
+
+    execute(
+        """INSERT INTO audit_log
+           (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash)
+    )
+
+
+def verify_chain(household_id: int) -> tuple[bool, str]:
+    """
+    Walk every audit entry for the household and recompute its HMAC.
+    Returns (True, "OK") or (False, "<description of first violation>").
+
+    TODO (Person 4): Call this automatically before displaying the log
+    so admins always see the chain status without having to ask.
+    """
+    key = _get_or_create_hmac_key()
+    entries = query(
+        "SELECT * FROM audit_log WHERE household_id = ? ORDER BY seq",
+        (household_id,)
+    )
+
+    expected_prev = "0" * 64
+    for e in entries:
+        if e["prev_hash"] != expected_prev:
+            return False, (f"Entry #{e['seq']}: prev_hash mismatch — "
+                           "an entry may have been inserted or deleted")
+        recomputed = _compute_entry_hash(
+            key, e["household_id"], e["seq"], e["timestamp"],
+            e["actor_id"], e["action"], e["details"], e["prev_hash"]
+        )
+        if not hmac.compare_digest(recomputed, e["entry_hash"]):
+            return False, f"Entry #{e['seq']}: HMAC mismatch — entry data has been altered"
+        expected_prev = e["entry_hash"]
+
+    return True, "OK"
+
+
+# ---------------------------------------------------------------------------
+# NOTIFICATIONS — Person 4 owns this stub
+# ---------------------------------------------------------------------------
+
+def notify(household_id: int, message: str) -> None:
+    """
+    Placeholder for notification logic.
+
+    TODO (Person 4): Implement at least one of:
+      - Print to terminal for all members who run `chorehouse poll`
+      - Write to a per-user notification file in the home directory
+      - Send an email (smtplib is standard library)
+
+    For the prototype, just printing is fine.
+    """
+    print(f"[Notification] {message}")
+
+
+# ---------------------------------------------------------------------------
+# COMMANDS
+# ---------------------------------------------------------------------------
+
+def cmd_complete(args) -> None:
+    """
+    Mark a chore as complete.
+    Roommates can only complete chores assigned to them.
+    Admins can complete any chore in their household.
+    Usage: python main.py activity complete --chore <id>
+    """
+    session = require_session()
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (args.chore,))
+    if not chore:
+        print(f"Error: chore {args.chore} not found.")
+        return
+
+    membership = require_membership(session["user_id"], chore["household_id"])
+
+    if chore["status"] == "complete":
+        print("Chore is already marked complete.")
+        return
+
+    # Authorization: roommates may only complete their own assigned chores
+    if membership["role"] != "admin" and chore["assigned_to"] != session["user_id"]:
+        print("Error: you can only complete chores assigned to you.")
+        return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    execute(
+        "UPDATE chores SET status = 'complete', completed_at = ? WHERE id = ?",
+        (now, args.chore)
+    )
+
+    record(chore["household_id"], session["user_id"], "chore.complete",
+           {"chore_id": args.chore, "title": chore["title"]})
+
+    notify(chore["household_id"],
+           f"{session['username']} marked '{chore['title']}' as complete.")
+    print(f"Chore '{chore['title']}' marked as complete.")
+
+
+def cmd_dispute(args) -> None:
+    """
+    File a complaint against a completed chore.
+    Usage: python main.py activity dispute --chore <id> --reason "Floor still dirty"
+    """
+    session = require_session()
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (args.chore,))
+    if not chore:
+        print(f"Error: chore {args.chore} not found.")
+        return
+
+    require_membership(session["user_id"], chore["household_id"])
+
+    if chore["status"] != "complete":
+        print("Error: you can only dispute a completed chore.")
+        return
+
+    reason = args.reason or input("Reason for dispute: ").strip()
+    if not reason or len(reason) > 1000:
+        print("Error: reason must be 1–1000 characters.")
+        return
+
+    complaint_id = execute(
+        "INSERT INTO complaints (chore_id, submitted_by, description) VALUES (?, ?, ?)",
+        (args.chore, session["user_id"], reason)
+    )
+    execute("UPDATE chores SET status = 'disputed' WHERE id = ?", (args.chore,))
+
+    record(chore["household_id"], session["user_id"], "complaint.file",
+           {"chore_id": args.chore, "complaint_id": complaint_id})
+
+    notify(chore["household_id"],
+           f"{session['username']} disputed '{chore['title']}'.")
+    print(f"Complaint filed (id={complaint_id}). An admin will review it.")
+
+
+def cmd_resolve(args) -> None:
+    """
+    Resolve a complaint (admin only).
+    Usage: python main.py activity resolve --complaint <id>
+                          --outcome uphold|dismiss --note "Needs to be redone"
+    """
+    session = require_session()
+
+    complaint = query_one("SELECT * FROM complaints WHERE id = ?", (args.complaint,))
+    if not complaint:
+        print(f"Error: complaint {args.complaint} not found.")
+        return
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (complaint["chore_id"],))
+    membership = get_membership(session["user_id"], chore["household_id"])
+    if not membership or membership["role"] != "admin":
+        print("Error: admin privileges required to resolve complaints.")
+        return
+
+    if complaint["resolved"]:
+        print("Complaint is already resolved.")
+        return
+
+    if args.outcome not in ("uphold", "dismiss"):
+        print("Error: --outcome must be 'uphold' or 'dismiss'.")
+        return
+
+    note = args.note or input("Resolution note: ").strip()
+    new_status = "pending" if args.outcome == "uphold" else "complete"
+
+    execute(
+        """UPDATE complaints
+           SET resolved = 1, resolution = ?, resolved_by = ?
+           WHERE id = ?""",
+        (note, session["user_id"], args.complaint)
+    )
+    execute("UPDATE chores SET status = ? WHERE id = ?",
+            (new_status, chore["id"]))
+
+    record(chore["household_id"], session["user_id"], "complaint.resolve",
+           {"complaint_id": args.complaint, "outcome": args.outcome})
+
+    notify(chore["household_id"],
+           f"Complaint on '{chore['title']}' was {args.outcome}d by {session['username']}.")
+    print(f"Complaint {args.outcome}d. Chore status is now '{new_status}'.")
+
+
+def cmd_audit(args) -> None:
+    """
+    Display the audit log for a household, with chain integrity check.
+    Usage: python main.py activity audit --household <id>
+    """
+    session = require_session()
+    require_membership(session["user_id"], args.household)
+    membership = get_membership(session["user_id"], args.household)
+
+    ok, msg = verify_chain(args.household)
+    if ok:
+        print("✓ Chain integrity verified — log has not been tampered with.\n")
+    else:
+        print(f"⚠ CHAIN INTEGRITY FAILED: {msg}\n")
+
+    entries = query(
+        """SELECT a.seq, a.timestamp, u.username, a.action, a.details, a.entry_hash
+           FROM audit_log a JOIN users u ON u.id = a.actor_id
+           WHERE a.household_id = ?
+           ORDER BY a.seq DESC""",
+        (args.household,)
+    )
+
+    if not entries:
+        print("No audit entries yet.")
+        return
+
+    for e in entries:
+        details = json.loads(e["details"])
+        detail_str = "  ".join(f"{k}={v}" for k, v in details.items())
+        hash_preview = e["entry_hash"][:12] + "…"
+        print(f"#{e['seq']:<4} {e['timestamp']}  {e['username']:<16} "
+              f"{e['action']:<22} {detail_str}")
+        # Only show hash previews to admins
+        if membership["role"] == "admin":
+            print(f"       hash={hash_preview}")
+
+
+# ---------------------------------------------------------------------------
+# Subparser registration
+# ---------------------------------------------------------------------------
+
+def register_subparsers(subparsers) -> None:
+    p = subparsers.add_parser("activity", help="Completion, disputes, and audit log")
+    sub = p.add_subparsers(dest="activity_cmd", required=True)
+
+    # complete
+    c = sub.add_parser("complete", help="Mark a chore as complete")
+    c.add_argument("--chore", type=int, required=True, metavar="CHORE_ID")
+    c.set_defaults(func=cmd_complete)
+
+    # dispute
+    c = sub.add_parser("dispute", help="Dispute a completed chore")
+    c.add_argument("--chore",  type=int, required=True, metavar="CHORE_ID")
+    c.add_argument("--reason", default=None)
+    c.set_defaults(func=cmd_dispute)
+
+    # resolve
+    c = sub.add_parser("resolve", help="Resolve a complaint (admin only)")
+    c.add_argument("--complaint", type=int, required=True, metavar="COMPLAINT_ID")
+    c.add_argument("--outcome",   required=True, choices=["uphold", "dismiss"])
+    c.add_argument("--note",      default=None)
+    c.set_defaults(func=cmd_resolve)
+
+    # audit
+    c = sub.add_parser("audit", help="View audit log for a household")
+    c.add_argument("--household", type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.set_defaults(func=cmd_audit)

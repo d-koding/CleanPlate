@@ -1,0 +1,103 @@
+ChoreHouse — Secure Roommate Chore Coordinator
+================================================
+
+Standard library only. No pip install required.
+Requires Python 3.10+ (for the X | None type hint syntax).
+
+Platform: Linux / macOS. Tested on Ubuntu 22.04.
+Run on the course VM: copy the folder, run python3 main.py <command>.
+
+
+QUICK START
+-----------
+
+  python3 main.py --help
+  python3 main.py register --username alice
+  python3 main.py login    --username alice
+  python3 main.py whoami
+
+
+FULL COMMAND REFERENCE
+----------------------
+
+-- Identity & Access (Person 1) --
+  python3 main.py register   --username <name>
+  python3 main.py login      --username <name>
+  python3 main.py logout
+  python3 main.py whoami
+
+-- Household Management (Person 2) --
+  python3 main.py household create        --name "42 Elm St"
+  python3 main.py household join          --code <invite_code>
+  python3 main.py household show          --id <household_id>
+  python3 main.py household list
+  python3 main.py household rotate-invite --id <household_id>
+  python3 main.py household remove-member --id <household_id> --username bob
+
+-- Chore Management (Person 3) --
+  python3 main.py chore create  --household <id> --title "Take out trash" [--due YYYY-MM-DD] [--assign bob]
+  python3 main.py chore assign  --chore <id> --username bob
+  python3 main.py chore list    --household <id> [--status pending|complete|disputed] [--mine]
+  python3 main.py chore show    --chore <id>
+
+-- Activity & Completion (Person 4) --
+  python3 main.py activity complete --chore <id>
+  python3 main.py activity dispute  --chore <id> --reason "Floor still dirty"
+  python3 main.py activity resolve  --complaint <id> --outcome uphold|dismiss --note "..."
+  python3 main.py activity audit    --household <id>
+
+
+EXAMPLE WALKTHROUGH
+-------------------
+
+  # Two users register
+  python3 main.py register --username alice
+  python3 main.py register --username bob
+
+  # Alice logs in and creates a household
+  python3 main.py login --username alice
+  python3 main.py household create --name "42 Elm Street"
+  # → prints invite code, e.g. "Invite code: aB3xQr_kLmN"
+
+  # Bob logs in and joins
+  python3 main.py login --username bob
+  python3 main.py household join --code aB3xQr_kLmN
+
+  # Alice (admin) creates and assigns a chore
+  python3 main.py login --username alice
+  python3 main.py chore create --household 1 --title "Vacuum living room" --assign bob --due 2025-04-10
+
+  # Bob completes the chore
+  python3 main.py login --username bob
+  python3 main.py activity complete --chore 1
+
+  # Alice disputes it
+  python3 main.py login --username alice
+  python3 main.py activity dispute --chore 1 --reason "Missed under the couch"
+
+  # Alice resolves her own dispute (uphold = bob must redo it)
+  python3 main.py activity resolve --complaint 1 --outcome uphold --note "Please redo"
+
+  # Anyone can view the audit log
+  python3 main.py activity audit --household 1
+
+
+FILE LAYOUT
+-----------
+  main.py        Entry point, argparse wiring
+  db.py          SQLite schema and query helpers          (shared)
+  session.py     File-based login state                   (shared)
+  auth.py        Register, login, logout, whoami          [Person 1]
+  households.py  Create, join, manage households          [Person 2]
+  chores.py      Create, assign, list chores              [Person 3]
+  activity.py    Complete, dispute, resolve, audit log    [Person 4]
+  chorehouse.db  Created automatically on first run
+
+
+SECURITY NOTES
+--------------
+  Passwords : bcrypt stub in auth.py — Person 1 must upgrade before demo.
+  Audit log : HMAC-SHA256 chained; verify_chain() detects any tampering.
+  HMAC key  : Stored in DB for prototype; move to env var for alpha.
+  Session   : ~/.chorehouse_session (chmod 600); cleared on logout.
+  Auth      : Role check on every sensitive command, not just at login.
