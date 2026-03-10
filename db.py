@@ -11,7 +11,7 @@ Usage from any other module:
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "chorehouse.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "cleanplate.db")
 
 
 def get_conn() -> sqlite3.Connection:

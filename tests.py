@@ -1,7 +1,7 @@
 """
 tests.py
 
-Basic integration-style test suite for the ChoreHouse CLI modules.
+Basic integration-style test suite for the cleanplate CLI modules.
 
 What it covers:
 - DB initialization
@@ -20,7 +20,7 @@ Important:
     activity.py, auth.py, chores.py, db.py, households.py, main.py, session.py,
     common.txt, 10k-most-common.txt
 - This suite redirects session.SESSION_PATH to a temporary file for each test
-  so it does not touch your real ~/.chorehouse_session file.
+  so it does not touch your real ~/.cleanplate_session file.
 """
 
 from __future__ import annotations
@@ -60,12 +60,12 @@ main = importlib.import_module("main")
 # Shared test utilities
 # ---------------------------------------------------------------------------
 
-class ChoreHouseTestCase(unittest.TestCase):
+class cleanplateTestCase(unittest.TestCase):
     """Base test case with isolated temp DB, temp session file, and stdout helpers."""
 
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
-        self.db_path = os.path.join(self.tempdir.name, "test_chorehouse.db")
+        self.db_path = os.path.join(self.tempdir.name, "test_cleanplate.db")
         self.session_path = os.path.join(self.tempdir.name, "test_session.json")
 
         # Point shared modules at isolated temp resources.
@@ -112,7 +112,7 @@ class ChoreHouseTestCase(unittest.TestCase):
 # Session tests
 # ---------------------------------------------------------------------------
 
-class TestSessionModule(ChoreHouseTestCase):
+class TestSessionModule(cleanplateTestCase):
     def test_save_and_load_session(self):
         session.save_session(7, "alice")
         loaded = session.load_session()
@@ -145,7 +145,7 @@ class TestSessionModule(ChoreHouseTestCase):
 # DB tests
 # ---------------------------------------------------------------------------
 
-class TestDatabaseInitialization(ChoreHouseTestCase):
+class TestDatabaseInitialization(cleanplateTestCase):
     def test_init_db_creates_expected_tables(self):
         rows = db.query(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -196,7 +196,7 @@ class TestDatabaseInitialization(ChoreHouseTestCase):
 # Auth tests
 # ---------------------------------------------------------------------------
 
-class TestAuth(ChoreHouseTestCase):
+class TestAuth(cleanplateTestCase):
     def test_hash_and_verify_password(self):
         pw = "StrongPassword!123"
         stored = auth._hash_password(pw)
@@ -287,7 +287,7 @@ class TestAuth(ChoreHouseTestCase):
 # Household tests
 # ---------------------------------------------------------------------------
 
-class TestHouseholds(ChoreHouseTestCase):
+class TestHouseholds(cleanplateTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.alice_id = self.create_user("alice")
@@ -410,7 +410,7 @@ class TestHouseholds(ChoreHouseTestCase):
 # Chore tests
 # ---------------------------------------------------------------------------
 
-class TestChores(ChoreHouseTestCase):
+class TestChores(cleanplateTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.alice_id = self.create_user("alice")
@@ -537,7 +537,7 @@ class TestChores(ChoreHouseTestCase):
 # Activity tests
 # ---------------------------------------------------------------------------
 
-class TestActivity(ChoreHouseTestCase):
+class TestActivity(cleanplateTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.alice_id = self.create_user("alice")
@@ -833,7 +833,7 @@ class TestActivity(ChoreHouseTestCase):
 # CLI parser tests
 # ---------------------------------------------------------------------------
 
-class TestMainParser(ChoreHouseTestCase):
+class TestMainParser(cleanplateTestCase):
     def test_build_parser_parses_auth_command(self):
         parser = main.build_parser()
         args = parser.parse_args(["login", "--username", "alice"])
@@ -865,7 +865,7 @@ class TestMainParser(ChoreHouseTestCase):
 # Integration tests
 # ---------------------------------------------------------------------------
 
-class TestIntegrationWorkflow(ChoreHouseTestCase):
+class TestIntegrationWorkflow(cleanplateTestCase):
     def test_full_end_to_end_workflow(self):
         db.init_db()
 

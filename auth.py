@@ -207,7 +207,7 @@ def cmd_register(args) -> None:
 
 def cmd_login(args) -> None:
     """
-    Log in to ChoreHouse. Saves session to ~/.chorehouse_session.
+    Log in to Cleanplate. Saves session to ~/.cleanplate_session.
     Usage: python main.py login --username alice
     """
     username = (args.username or input("Username: ").strip()).strip()
@@ -282,7 +282,7 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("--username", default=None, help="Desired username")
     p.set_defaults(func=cmd_register)
 
-    p = subparsers.add_parser("login", help="Log in to ChoreHouse")
+    p = subparsers.add_parser("login", help="Log in to Clean Plate")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_login)
 

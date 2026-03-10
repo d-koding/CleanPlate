@@ -1,5 +1,5 @@
 """
-main.py — ChoreHouse CLI entry point
+main.py — cleanplate CLI entry point
 Standard library only: argparse
 
 Run any command with --help to see usage, e.g.:
@@ -25,8 +25,8 @@ import activity
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="chorehouse",
-        description="ChoreHouse — Secure roommate chore coordinator",
+        prog="cleanplate",
+        description="cleanplate — Secure roommate chore coordinator",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

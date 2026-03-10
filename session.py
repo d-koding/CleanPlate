@@ -9,7 +9,7 @@ in the user's home directory so login persists between commands.
 import json
 import os
 
-SESSION_PATH = os.path.join(os.path.expanduser("~"), ".chorehouse_session")
+SESSION_PATH = os.path.join(os.path.expanduser("~"), ".cleanplate_session")
 
 
 def save_session(user_id: int, username: str) -> None:
