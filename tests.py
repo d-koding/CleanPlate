@@ -1,445 +1,986 @@
 """
-tests.py — ChoreHouse prototype test suite
+tests.py
 
-Run:  python -m pytest tests.py -v
+Basic integration-style test suite for the ChoreHouse CLI modules.
 
-Coverage areas:
-  - Authentication: registration, login, bad-password rejection, session isolation
-  - Authorization: role enforcement (admin-only routes, member-only routes,
-    cross-household access prevention)
-  - Audit: chain creation, chain verification, tamper detection
-  - Core features: household CRUD, chore lifecycle, complaint workflow
+What it covers:
+- DB initialization
+- Password hashing / verification / strength rules
+- Register / login / logout / whoami
+- Household create / join / rotate-invite / remove-member / list
+- Chore create / assign / list / show
+- Activity complete / dispute / resolve / audit / poll
+- CLI parser wiring in main.py
+
+Run:
+    python -m unittest -v tests.py
+
+Important:
+- Put this file in the same directory as:
+    activity.py, auth.py, chores.py, db.py, households.py, main.py, session.py,
+    common.txt, 10k-most-common.txt
+- This suite redirects session.SESSION_PATH to a temporary file for each test
+  so it does not touch your real ~/.chorehouse_session file.
 """
 
-import json
-import hmac
-import hashlib
+from __future__ import annotations
+
+import contextlib
+import importlib
+import io
 import os
-import pytest
-
-os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
-
-from app import app as flask_app, db as _db
-from models import (AuditEntry, AuditHMACKey, Chore, Complaint,
-                    Household, HouseholdMember, User)
-from auth import hash_password, check_password
+import sys
+import tempfile
+import unittest
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Bootstrapping
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
-def app():
-    flask_app.config["TESTING"]                  = True
-    flask_app.config["SQLALCHEMY_DATABASE_URI"]  = "sqlite:///:memory:"
-    flask_app.config["WTF_CSRF_ENABLED"]         = False
-    with flask_app.app_context():
-        _db.create_all()
-        if AuditHMACKey.query.first() is None:
-            _db.session.add(AuditHMACKey())
-            _db.session.commit()
-        yield flask_app
-        _db.session.remove()
-        _db.drop_all()
+HERE = Path(__file__).resolve().parent
 
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
-@pytest.fixture()
-def client(app):
-    return app.test_client()
-
-
-def register_and_login(client, username="alice", password="password123"):
-    client.post("/register", data={"username": username, "password": password,
-                                    "confirm": password})
-    client.post("/login",    data={"username": username, "password": password})
-    return username
-
-
-def make_household(client, name="Test House"):
-    rv = client.post("/households/create", data={"name": name},
-                     follow_redirects=True)
-    with client.application.app_context():
-        return Household.query.filter_by(name=name).first()
+# Import project modules normally now that session.py exists.
+db = importlib.import_module("db")
+session = importlib.import_module("session")
+auth = importlib.import_module("auth")
+households = importlib.import_module("households")
+activity = importlib.import_module("activity")
+chores = importlib.import_module("chores")
+main = importlib.import_module("main")
 
 
 # ---------------------------------------------------------------------------
-# Authentication tests
+# Shared test utilities
 # ---------------------------------------------------------------------------
 
-class TestAuth:
-    def test_password_hashing_is_not_plaintext(self, app):
-        h = hash_password("supersecret")
-        assert "supersecret" not in h
-        assert h.startswith("$2b$")
+class ChoreHouseTestCase(unittest.TestCase):
+    """Base test case with isolated temp DB, temp session file, and stdout helpers."""
 
-    def test_correct_password_accepted(self, app):
-        h = hash_password("mypassword")
-        assert check_password("mypassword", h) is True
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tempdir.name, "test_chorehouse.db")
+        self.session_path = os.path.join(self.tempdir.name, "test_session.json")
 
-    def test_wrong_password_rejected(self, app):
-        h = hash_password("mypassword")
-        assert check_password("wrongpassword", h) is False
+        # Point shared modules at isolated temp resources.
+        db.DB_PATH = self.db_path
+        session.SESSION_PATH = self.session_path
 
-    def test_register_creates_user(self, client):
-        rv = client.post("/register",
-                         data={"username": "alice", "password": "password123",
-                               "confirm": "password123"},
-                         follow_redirects=True)
-        assert rv.status_code == 200
-        with client.application.app_context():
-            u = User.query.filter_by(username="alice").first()
-            assert u is not None
-            assert u.password_hash != "password123"
+        # Ensure clean state for every test.
+        session.clear_session()
+        db.init_db()
 
-    def test_register_rejects_short_password(self, client):
-        rv = client.post("/register",
-                         data={"username": "alice", "password": "short",
-                               "confirm": "short"},
-                         follow_redirects=True)
-        assert b"8 characters" in rv.data
+    def tearDown(self) -> None:
+        session.clear_session()
+        self.tempdir.cleanup()
 
-    def test_register_rejects_mismatched_passwords(self, client):
-        rv = client.post("/register",
-                         data={"username": "alice", "password": "password123",
-                               "confirm": "different"},
-                         follow_redirects=True)
-        assert b"do not match" in rv.data
+    def capture_output(self, func, *args, **kwargs) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            func(*args, **kwargs)
+        return buf.getvalue()
 
-    def test_register_rejects_duplicate_username(self, client):
-        client.post("/register", data={"username": "alice", "password": "password123",
-                                        "confirm": "password123"})
-        rv = client.post("/register",
-                         data={"username": "alice", "password": "password456",
-                               "confirm": "password456"},
-                         follow_redirects=True)
-        assert b"already taken" in rv.data
+    def login_as(self, username: str) -> None:
+        row = db.query_one("SELECT id FROM users WHERE username = ?", (username,))
+        self.assertIsNotNone(row, f"User {username!r} does not exist")
+        session.save_session(row["id"], username)
 
-    def test_login_with_wrong_password_rejected(self, client):
-        register_and_login(client, "alice", "password123")
-        client.post("/logout")
-        rv = client.post("/login",
-                         data={"username": "alice", "password": "wrongpassword"},
-                         follow_redirects=True)
-        assert b"Invalid" in rv.data
+    def create_user(self, username: str, password: str = "GoodPass!123") -> int:
+        pw_hash = auth._hash_password(password)
+        return db.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, pw_hash),
+        )
 
-    def test_login_with_unknown_user_rejected(self, client):
-        rv = client.post("/login",
-                         data={"username": "nobody", "password": "password123"},
-                         follow_redirects=True)
-        assert b"Invalid" in rv.data
+    def get_household_by_name(self, name: str):
+        return db.query_one("SELECT * FROM households WHERE name = ?", (name,))
 
-    def test_logout_clears_session(self, client):
-        register_and_login(client, "alice", "password123")
-        client.post("/logout")
-        rv = client.get("/", follow_redirects=True)
-        assert b"Log in" in rv.data
+    def get_chore_by_title(self, title: str):
+        return db.query_one("SELECT * FROM chores WHERE title = ?", (title,))
+
+    def get_complaint_for_chore(self, chore_id: int):
+        return db.query_one("SELECT * FROM complaints WHERE chore_id = ?", (chore_id,))
 
 
 # ---------------------------------------------------------------------------
-# Authorization tests
+# Session tests
 # ---------------------------------------------------------------------------
 
-class TestAuthorization:
-    def test_unauthenticated_redirected_to_login(self, client):
-        rv = client.get("/", follow_redirects=True)
-        assert b"Log in" in rv.data
+class TestSessionModule(ChoreHouseTestCase):
+    def test_save_and_load_session(self):
+        session.save_session(7, "alice")
+        loaded = session.load_session()
 
-    def test_non_member_cannot_view_household(self, client):
-        register_and_login(client, "alice")
-        h = make_household(client)
+        self.assertEqual(loaded["user_id"], 7)
+        self.assertEqual(loaded["username"], "alice")
+        self.assertTrue(os.path.exists(self.session_path))
 
-        # Login as bob (not a member)
-        client.post("/logout")
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
+    def test_clear_session_removes_file(self):
+        session.save_session(7, "alice")
+        self.assertTrue(os.path.exists(self.session_path))
 
-        rv = client.get(f"/households/{h.id}")
-        assert rv.status_code == 403
+        session.clear_session()
+        self.assertFalse(os.path.exists(self.session_path))
+        self.assertIsNone(session.load_session())
 
-    def test_roommate_cannot_create_chore(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
-        client.post("/logout")
+    def test_require_session_exits_when_not_logged_in(self):
+        with self.assertRaises(SystemExit):
+            session.require_session()
 
-        # Bob joins as roommate
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
-        client.post("/households/join", data={"invite_code": h.invite_code})
+    def test_require_session_returns_session_when_logged_in(self):
+        session.save_session(3, "bob")
+        loaded = session.require_session()
 
-        rv = client.post(f"/households/{h.id}/chores/new",
-                         data={"title": "Sweep floor"})
-        assert rv.status_code == 403
+        self.assertEqual(loaded["user_id"], 3)
+        self.assertEqual(loaded["username"], "bob")
 
-    def test_roommate_cannot_remove_member(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
 
-        with app.app_context():
-            alice = User.query.filter_by(username="alice").first()
-            alice_id = alice.id
+# ---------------------------------------------------------------------------
+# DB tests
+# ---------------------------------------------------------------------------
 
-        client.post("/logout")
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
-        client.post("/households/join", data={"invite_code": h.invite_code})
+class TestDatabaseInitialization(ChoreHouseTestCase):
+    def test_init_db_creates_expected_tables(self):
+        rows = db.query(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        names = {row["name"] for row in rows}
 
-        rv = client.post(f"/households/{h.id}/members/{alice_id}/remove")
-        assert rv.status_code == 403
+        expected = {
+            "audit_key",
+            "audit_log",
+            "chores",
+            "complaints",
+            "households",
+            "members",
+            "notifications",
+            "users",
+        }
+        self.assertTrue(expected.issubset(names))
 
-    def test_roommate_cannot_complete_others_chore(self, client, app):
-        """A roommate assigned to no chore should not be able to mark it done."""
-        register_and_login(client, "alice")
-        h = make_household(client)
+    def test_execute_query_and_query_one_work(self):
+        user_id = db.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            ("alice", "hash"),
+        )
+        self.assertIsInstance(user_id, int)
 
-        with app.app_context():
-            alice = User.query.filter_by(username="alice").first()
+        row = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+        self.assertEqual(row["username"], "alice")
 
-        client.post("/logout")
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
-        client.post("/households/join", data={"invite_code": h.invite_code})
+        rows = db.query("SELECT * FROM users")
+        self.assertEqual(len(rows), 1)
 
-        with app.app_context():
-            bob = User.query.filter_by(username="bob").first()
-            household = Household.query.filter_by(name="Test House").first()
-            chore = Chore(
-                household_id=household.id,
+    def test_init_db_is_idempotent(self):
+        db.init_db()
+        db.init_db()  # should not crash
+        row = db.query_one("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        self.assertIsNotNone(row)
+
+    def test_foreign_keys_reject_invalid_member_reference(self):
+        import sqlite3
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, ?)",
+                (9999, 9999, "roommate"),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Auth tests
+# ---------------------------------------------------------------------------
+
+class TestAuth(ChoreHouseTestCase):
+    def test_hash_and_verify_password(self):
+        pw = "StrongPassword!123"
+        stored = auth._hash_password(pw)
+
+        self.assertTrue(stored.startswith("scrypt:"))
+        self.assertTrue(auth._verify_password(pw, stored))
+        self.assertFalse(auth._verify_password("wrong-password", stored))
+
+    def test_verify_password_rejects_invalid_hash_format(self):
+        self.assertFalse(auth._verify_password("abc", "not-a-real-hash"))
+        self.assertFalse(auth._verify_password("abc", "sha256:abc:def"))
+
+    def test_password_strength_checker_flags_common_password(self):
+        errors = auth._check_password_strength("password")
+        joined = " | ".join(errors).lower()
+        self.assertTrue("common" in joined or "breach" in joined)
+
+    def test_password_strength_checker_flags_sequential_password(self):
+        errors = auth._check_password_strength("12345678")
+        joined = " | ".join(errors).lower()
+        self.assertIn("sequential", joined)
+
+    def test_password_strength_checker_accepts_reasonable_password(self):
+        errors = auth._check_password_strength("ValidPass!482")
+        self.assertEqual(errors, [])
+
+    def test_register_login_logout_and_whoami(self):
+        args = Namespace(username="alice")
+
+        with patch("getpass.getpass", side_effect=["GoodPass!123", "GoodPass!123"]):
+            out = self.capture_output(auth.cmd_register, args)
+        self.assertIn("Account created for 'alice'", out)
+
+        row = db.query_one("SELECT * FROM users WHERE username = ?", ("alice",))
+        self.assertIsNotNone(row)
+
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            out = self.capture_output(auth.cmd_login, args)
+        self.assertIn("Logged in as 'alice'", out)
+
+        loaded = session.load_session()
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["username"], "alice")
+
+        out = self.capture_output(auth.cmd_whoami, Namespace())
+        self.assertIn("Logged in as: alice", out)
+
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("Logged out 'alice'", out)
+        self.assertIsNone(session.load_session())
+
+    def test_login_rejects_bad_password(self):
+        self.create_user("alice", "GoodPass!123")
+
+        with patch("getpass.getpass", return_value="wrongpass"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+
+        self.assertIn("Error: invalid username or password.", out)
+        self.assertIsNone(session.load_session())
+
+    def test_register_rejects_duplicate_username(self):
+        self.create_user("alice", "GoodPass!123")
+
+        with patch("getpass.getpass", side_effect=["OtherGood!123", "OtherGood!123"]):
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+
+        self.assertIn("already taken", out)
+
+    def test_logout_without_active_session(self):
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("No active session.", out)
+    
+    def test_register_rejects_empty_username(self):
+        out = self.capture_output(auth.cmd_register, Namespace(username=""))
+        self.assertIn("username cannot be empty", out.lower())
+
+    def test_register_rejects_bad_username_chars(self):
+        out = self.capture_output(auth.cmd_register, Namespace(username="bad user!"))
+        self.assertIn("may only contain", out.lower())
+
+    def test_register_rejects_password_mismatch(self):
+        with patch("getpass.getpass", side_effect=["GoodPass!123", "Mismatch!123"]):
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+        self.assertIn("passwords do not match", out.lower())
+
+
+# ---------------------------------------------------------------------------
+# Household tests
+# ---------------------------------------------------------------------------
+
+class TestHouseholds(ChoreHouseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.alice_id = self.create_user("alice")
+        self.bob_id = self.create_user("bob")
+        self.cara_id = self.create_user("cara")
+
+    def create_household_as_alice(self, name="Maple House"):
+        self.login_as("alice")
+        out = self.capture_output(households.cmd_create_household, Namespace(name=name))
+        self.assertIn("created", out)
+        household = self.get_household_by_name(name)
+        self.assertIsNotNone(household)
+        return household
+
+    def test_create_household_makes_creator_admin(self):
+        household = self.create_household_as_alice("Elm House")
+
+        member = db.query_one(
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (self.alice_id, household["id"]),
+        )
+        self.assertIsNotNone(member)
+        self.assertEqual(member["role"], "admin")
+
+    def test_join_household_with_invite_code(self):
+        household = self.create_household_as_alice()
+
+        self.login_as("bob")
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+        self.assertIn("Joined 'Maple House' as a roommate.", out)
+
+        member = db.query_one(
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertIsNotNone(member)
+        self.assertEqual(member["role"], "roommate")
+
+    def test_rotate_invite_invalidates_old_code(self):
+        household = self.create_household_as_alice("Oak House")
+        old_code = household["invite_code"]
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_rotate_invite,
+            Namespace(id=household["id"]),
+        )
+        self.assertIn("New invite code:", out)
+
+        refreshed = db.query_one(
+            "SELECT * FROM households WHERE id = ?",
+            (household["id"],),
+        )
+        self.assertNotEqual(old_code, refreshed["invite_code"])
+
+        self.login_as("bob")
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=old_code),
+        )
+        self.assertIn("invalid invite code", out.lower())
+
+    def test_remove_member_by_admin(self):
+        household = self.create_household_as_alice("Pine House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_remove_member,
+            Namespace(id=household["id"], username="bob"),
+        )
+        self.assertIn("'bob' removed from household", out)
+
+        member = db.query_one(
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertIsNone(member)
+
+    def test_list_households_shows_memberships(self):
+        household = self.create_household_as_alice("Cedar House")
+
+        out = self.capture_output(households.cmd_list_households, Namespace())
+        self.assertIn("Cedar House", out)
+        self.assertIn("admin", out)
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+        out = self.capture_output(households.cmd_list_households, Namespace())
+        self.assertIn("Cedar House", out)
+        self.assertIn("roommate", out)
+
+    def test_join_household_prevents_duplicate_membership(self):
+        household = self.create_household_as_alice()
+        self.login_as("bob")
+        self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
+        out = self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
+        self.assertIn("already a member", out.lower())
+
+    def test_non_admin_cannot_rotate_invite(self):
+        household = self.create_household_as_alice()
+        self.login_as("bob")
+        self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
+        with self.assertRaises(SystemExit):
+            households.cmd_rotate_invite(Namespace(id=household["id"]))
+
+
+# ---------------------------------------------------------------------------
+# Chore tests
+# ---------------------------------------------------------------------------
+
+class TestChores(ChoreHouseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.alice_id = self.create_user("alice")
+        self.bob_id = self.create_user("bob")
+
+        self.login_as("alice")
+        self.capture_output(households.cmd_create_household, Namespace(name="Test Home"))
+        self.household = self.get_household_by_name("Test Home")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=self.household["invite_code"]),
+        )
+
+        self.login_as("alice")
+
+    def test_create_chore_with_assignment_records_audit(self):
+        out = self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=self.household["id"],
+                title="Wash dishes",
+                description="Kitchen sink and drying rack",
+                due=None,
+                assign="bob",
+            ),
+        )
+        self.assertIn("Chore 'Wash dishes' created", out)
+        self.assertIn("Assigned to: bob", out)
+
+        chore = self.get_chore_by_title("Wash dishes")
+        self.assertIsNotNone(chore)
+        self.assertEqual(chore["assigned_to"], self.bob_id)
+
+        audit_row = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (self.household["id"], "chore.create"),
+        )
+        self.assertIsNotNone(audit_row)
+
+    def test_assign_chore_updates_assignee_and_records_audit(self):
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=self.household["id"],
                 title="Vacuum",
-                assigned_to=alice.id,   # assigned to alice, not bob
-                created_by=alice.id,
+                description="Living room",
+                due=None,
+                assign=None,
+            ),
+        )
+        chore = self.get_chore_by_title("Vacuum")
+
+        out = self.capture_output(
+            chores.cmd_assign_chore,
+            Namespace(chore=chore["id"], username="bob"),
+        )
+        self.assertIn("assigned to 'bob'", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (chore["id"],))
+        self.assertEqual(refreshed["assigned_to"], self.bob_id)
+
+        audit_row = db.query_one(
+            "SELECT * FROM audit_log WHERE action = ? AND household_id = ?",
+            ("chore.assign", self.household["id"]),
+        )
+        self.assertIsNotNone(audit_row)
+
+    def test_list_and_show_chores(self):
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=self.household["id"],
+                title="Laundry",
+                description="Wash towels",
+                due=None,
+                assign="bob",
+            ),
+        )
+        chore = self.get_chore_by_title("Laundry")
+
+        out = self.capture_output(
+            chores.cmd_list_chores,
+            Namespace(
+                household=self.household["id"],
+                status=None,
+                mine=False,
+                overdue=False,
+            ),
+        )
+        self.assertIn("Laundry", out)
+        self.assertIn("bob", out)
+
+        self.login_as("bob")
+        out = self.capture_output(chores.cmd_show_chore, Namespace(chore=chore["id"]))
+        self.assertIn("=== Chore #", out)
+        self.assertIn("Laundry", out)
+        self.assertIn("Wash towels", out)
+
+    def test_create_chore_rejects_empty_title(self):
+        out = self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(household=self.household["id"], title="", description="", due=None, assign=None),
+        )
+        self.assertIn("title must be", out.lower())
+
+    def test_create_chore_rejects_past_due_date(self):
+        out = self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(household=self.household["id"], title="Trash", description="", due="2000-01-01", assign=None),
+        )
+        self.assertIn("cannot be in the past", out.lower())
+
+    def test_non_admin_cannot_create_chore(self):
+        self.login_as("bob")
+        with self.assertRaises(SystemExit):
+            chores.cmd_create_chore(
+                Namespace(household=self.household["id"], title="Trash", description="", due=None, assign=None)
             )
-            _db.session.add(chore)
-            _db.session.commit()
-            chore_id = chore.id
-
-        rv = client.post(f"/households/{h.id}/chores/{chore_id}/complete")
-        assert rv.status_code == 403
-
-    def test_cross_household_audit_log_blocked(self, client, app):
-        register_and_login(client, "alice")
-        h1 = make_household(client, "House 1")
-        client.post("/logout")
-
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
-        client.post("/households/create", data={"name": "House 2"})
-
-        # Bob tries to read Alice's audit log
-        rv = client.get(f"/households/{h1.id}/audit")
-        assert rv.status_code == 403
 
 
 # ---------------------------------------------------------------------------
-# Audit chain tests
+# Activity tests
 # ---------------------------------------------------------------------------
 
-class TestAuditChain:
-    def test_chain_starts_with_genesis_sentinel(self, client, app):
-        register_and_login(client, "alice")
-        make_household(client)
-        with app.app_context():
-            h = Household.query.first()
-            first = (AuditEntry.query
-                     .filter_by(household_id=h.id)
-                     .order_by(AuditEntry.sequence_num)
-                     .first())
-            assert first.prev_hash == "0" * 64
-            assert first.sequence_num == 1
+class TestActivity(ChoreHouseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.alice_id = self.create_user("alice")
+        self.bob_id = self.create_user("bob")
+        self.cara_id = self.create_user("cara")
 
-    def test_chain_verifies_after_normal_operations(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
+        self.login_as("alice")
+        self.capture_output(households.cmd_create_household, Namespace(name="Activity House"))
+        self.household = self.get_household_by_name("Activity House")
 
-        with app.app_context():
-            household = Household.query.filter_by(name="Test House").first()
-            alice = User.query.filter_by(username="alice").first()
-            # Add a couple more entries
-            AuditEntry.append(household_id=household.id, actor_id=alice.id,
-                              action="chore.create", details={"title": "Dishes"})
-            AuditEntry.append(household_id=household.id, actor_id=alice.id,
-                              action="chore.complete", details={"title": "Dishes"})
-            _db.session.commit()
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=self.household["invite_code"]),
+        )
 
-            ok, msg = AuditEntry.verify_chain(household.id)
-            assert ok is True, msg
+        self.login_as("cara")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=self.household["invite_code"]),
+        )
 
-    def test_chain_detects_field_tampering(self, client, app):
-        register_and_login(client, "alice")
-        make_household(client)
-        with app.app_context():
-            h = Household.query.first()
-            entry = AuditEntry.query.filter_by(household_id=h.id).first()
-            # Silently mutate the action field — simulates DB tampering
-            entry.action = "membership.remove"
-            _db.session.commit()
+        self.login_as("alice")
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=self.household["id"],
+                title="Take out trash",
+                description="Bins to curb",
+                due=None,
+                assign="bob",
+            ),
+        )
+        self.chore = self.get_chore_by_title("Take out trash")
 
-            ok, msg = AuditEntry.verify_chain(h.id)
-            assert ok is False
-            assert "HMAC mismatch" in msg
+    def test_complete_chore_creates_notification_and_audit_entry(self):
+        self.login_as("bob")
+        out = self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        self.assertIn("marked as complete", out)
 
-    def test_chain_detects_insertion(self, client, app):
-        register_and_login(client, "alice")
-        make_household(client)
-        with app.app_context():
-            h = Household.query.first()
-            alice = User.query.filter_by(username="alice").first()
-            key_row = AuditHMACKey.query.first()
-            key_bytes = bytes.fromhex(key_row.key)
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+        self.assertIsNotNone(refreshed["completed_at"])
 
-            entries = (AuditEntry.query.filter_by(household_id=h.id)
-                       .order_by(AuditEntry.sequence_num).all())
-            last = entries[-1]
+        audit_row = db.query_one(
+            "SELECT * FROM audit_log WHERE action = ? AND household_id = ?",
+            ("chore.complete", self.household["id"]),
+        )
+        self.assertIsNotNone(audit_row)
 
-            # Insert a forged entry with sequence_num 0 to disrupt the chain
-            from datetime import datetime, timezone
-            fake_hash = hmac.new(key_bytes, b"forged", hashlib.sha256).hexdigest()
-            bad_entry = AuditEntry(
-                household_id=h.id,
-                sequence_num=0,        # out-of-sequence
-                timestamp=datetime.now(timezone.utc),
-                actor_id=alice.id,
-                action="forged.action",
-                details_json="{}",
-                prev_hash="0" * 64,
-                entry_hash=fake_hash,
-            )
-            _db.session.add(bad_entry)
-            _db.session.commit()
+        note = db.query_one(
+            "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC",
+            (self.alice_id,),
+        )
+        self.assertIsNotNone(note)
+        self.assertIn("marked 'Take out trash' as complete", note["message"])
 
-            ok, msg = AuditEntry.verify_chain(h.id)
-            assert ok is False
+    def test_roommate_cannot_complete_other_users_chore(self):
+        self.login_as("cara")
+        out = self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        self.assertIn("only complete chores assigned to you", out.lower())
 
-    def test_sequential_entries_link_correctly(self, client, app):
-        register_and_login(client, "alice")
-        make_household(client)
-        with app.app_context():
-            h = Household.query.first()
-            alice = User.query.filter_by(username="alice").first()
-            for i in range(5):
-                AuditEntry.append(household_id=h.id, actor_id=alice.id,
-                                  action=f"test.action.{i}", details={"i": i})
-            _db.session.commit()
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "pending")
+        self.assertIsNone(refreshed["completed_at"])
 
-            entries = (AuditEntry.query
-                       .filter_by(household_id=h.id)
-                       .order_by(AuditEntry.sequence_num).all())
-            for i in range(1, len(entries)):
-                assert entries[i].prev_hash == entries[i-1].entry_hash
+    def test_admin_can_complete_any_household_chore(self):
+        self.login_as("alice")
+        out = self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        self.assertIn("marked as complete", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+
+    def test_dispute_rejects_non_completed_chore(self):
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="This was not done."),
+        )
+        self.assertIn("only dispute a completed chore", out.lower())
+
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+        self.assertIsNone(complaint)
+
+    def test_dispute_rejects_empty_reason(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason=""),
+        )
+        self.assertIn("reason must be 1–1000 characters", out.lower())
+
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+        self.assertIsNone(complaint)
+
+    def test_dispute_rejects_too_long_reason(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="x" * 1001),
+        )
+        self.assertIn("reason must be 1–1000 characters.\n", out.lower())
+
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+        self.assertIsNone(complaint)
+
+    def test_dispute_and_resolve_uphold_flow(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="Trash bags were left inside."),
+        )
+        self.assertIn("Complaint filed", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "disputed")
+
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+        self.assertIsNotNone(complaint)
+        self.assertEqual(complaint["resolved"], 0)
+
+        out = self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="uphold",
+                note="Needs to be redone.",
+            ),
+        )
+        self.assertIn("Complaint uphold", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "pending")
+
+        complaint2 = db.query_one(
+            "SELECT * FROM complaints WHERE id = ?",
+            (complaint["id"],),
+        )
+        self.assertEqual(complaint2["resolved"], 1)
+        self.assertEqual(complaint2["resolution"], "Needs to be redone.")
+
+    def test_non_admin_cannot_resolve_complaint(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="Still dirty."),
+        )
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+
+        self.login_as("bob")
+        out = self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="uphold",
+                note="Trying to resolve as roommate",
+            ),
+        )
+        self.assertIn("admin privileges required", out.lower())
+
+        refreshed = db.query_one(
+            "SELECT * FROM complaints WHERE id = ?",
+            (complaint["id"],),
+        )
+        self.assertEqual(refreshed["resolved"], 0)
+
+    def test_resolve_dismiss_keeps_chore_complete(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="Wanted to double check."),
+        )
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+
+        out = self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="dismiss",
+                note="Looks good after review.",
+            ),
+        )
+        self.assertIn("Complaint dismiss", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+
+    def test_resolve_rejects_already_resolved_complaint(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=self.chore["id"], reason="Needs review."),
+        )
+        complaint = self.get_complaint_for_chore(self.chore["id"])
+
+        self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="dismiss",
+                note="Reviewed.",
+            ),
+        )
+
+        out = self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="dismiss",
+                note="Reviewed again.",
+            ),
+        )
+        self.assertIn("already resolved", out.lower())
+
+    def test_poll_shows_and_marks_notifications_read(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(activity.cmd_poll, Namespace())
+        self.assertIn("Notifications:", out)
+        self.assertIn("Take out trash", out)
+
+        unread = db.query_one(
+            "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read = 0",
+            (self.alice_id,),
+        )
+        self.assertEqual(unread["n"], 0)
+
+        out = self.capture_output(activity.cmd_poll, Namespace())
+        self.assertIn("No new notifications.", out)
+
+    def test_actor_does_not_notify_themself_on_complete(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        bob_notes = db.query(
+            "SELECT * FROM notifications WHERE user_id = ?",
+            (self.bob_id,),
+        )
+        self.assertEqual(len(bob_notes), 0)
+
+    def test_verify_chain_detects_tampering(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        ok, msg = activity.verify_chain(self.household["id"])
+        self.assertTrue(ok)
+        self.assertEqual(msg, "OK")
+
+        db.execute(
+            "UPDATE audit_log SET details = ? WHERE household_id = ? AND seq = 1",
+            ('{"tampered": true}', self.household["id"]),
+        )
+
+        ok, msg = activity.verify_chain(self.household["id"])
+        self.assertFalse(ok)
+        self.assertIn("HMAC mismatch", msg)
+
+    def test_audit_command_prints_integrity_status(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertIn("Chain integrity verified", out)
+        self.assertIn("chore.complete", out)
 
 
 # ---------------------------------------------------------------------------
-# Core feature tests
+# CLI parser tests
 # ---------------------------------------------------------------------------
 
-class TestCoreFeatures:
-    def test_household_creation(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
-        assert h is not None
-        assert h.invite_code is not None and len(h.invite_code) > 10
+class TestMainParser(ChoreHouseTestCase):
+    def test_build_parser_parses_auth_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["login", "--username", "alice"])
 
-    def test_join_household(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
-        client.post("/logout")
+        self.assertEqual(args.command, "login")
+        self.assertEqual(args.username, "alice")
+        self.assertTrue(callable(args.func))
 
-        client.post("/register", data={"username": "bob", "password": "password123",
-                                        "confirm": "password123"})
-        client.post("/login", data={"username": "bob", "password": "password123"})
-        rv = client.post("/households/join",
-                         data={"invite_code": h.invite_code},
-                         follow_redirects=True)
-        assert rv.status_code == 200
+    def test_build_parser_parses_nested_household_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["household", "create", "--name", "Demo"])
 
-        with app.app_context():
-            bob = User.query.filter_by(username="bob").first()
-            m = get_m = HouseholdMember.query.filter_by(
-                user_id=bob.id, household_id=h.id).first()
-            assert m is not None
-            assert m.role == "roommate"
+        self.assertEqual(args.command, "household")
+        self.assertEqual(args.household_cmd, "create")
+        self.assertEqual(args.name, "Demo")
+        self.assertTrue(callable(args.func))
 
-    def test_invalid_invite_code_rejected(self, client):
-        register_and_login(client)
-        rv = client.post("/households/join",
-                         data={"invite_code": "INVALID_CODE_XYZ"},
-                         follow_redirects=True)
-        assert b"Invalid invite code" in rv.data
+    def test_build_parser_parses_nested_activity_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["activity", "complete", "--chore", "4"])
 
-    def test_chore_lifecycle(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
+        self.assertEqual(args.command, "activity")
+        self.assertEqual(args.activity_cmd, "complete")
+        self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
 
-        with app.app_context():
-            alice = User.query.filter_by(username="alice").first()
-            hh = Household.query.filter_by(name="Test House").first()
 
-        rv = client.post(f"/households/{h.id}/chores/new",
-                         data={"title": "Do dishes", "assigned_to": alice.id},
-                         follow_redirects=True)
-        assert rv.status_code == 200
+# ---------------------------------------------------------------------------
+# Integration tests
+# ---------------------------------------------------------------------------
 
-        with app.app_context():
-            chore = Chore.query.filter_by(title="Do dishes").first()
-            assert chore is not None
-            assert chore.status == "pending"
-            chore_id = chore.id
+class TestIntegrationWorkflow(ChoreHouseTestCase):
+    def test_full_end_to_end_workflow(self):
+        db.init_db()
 
-        client.post(f"/households/{h.id}/chores/{chore_id}/complete")
-        with app.app_context():
-            chore = _db.session.get(Chore, chore_id)
-            assert chore.status == "complete"
-            assert chore.completed_at is not None
+        with patch("getpass.getpass", side_effect=["GoodPass!123", "GoodPass!123"]):
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+        self.assertIn("Account created for 'alice'", out)
 
-    def test_invite_rotation_invalidates_old_code(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
-        old_code = h.invite_code
+        with patch("getpass.getpass", side_effect=["GoodPass!456", "GoodPass!456"]):
+            out = self.capture_output(auth.cmd_register, Namespace(username="bob"))
+        self.assertIn("Account created for 'bob'", out)
 
-        client.post(f"/households/{h.id}/rotate-invite")
-        with app.app_context():
-            h_fresh = _db.session.get(Household, h.id)
-            assert h_fresh.invite_code != old_code
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+        self.assertIn("Logged in as 'alice'", out)
 
-    def test_complaint_and_resolution(self, client, app):
-        register_and_login(client, "alice")
-        h = make_household(client)
+        out = self.capture_output(
+            households.cmd_create_household,
+            Namespace(name="Integration House"),
+        )
+        self.assertIn("Household 'Integration House' created", out)
 
-        with app.app_context():
-            alice = User.query.filter_by(username="alice").first()
+        household = self.get_household_by_name("Integration House")
+        self.assertIsNotNone(household)
 
-        # Admin creates and completes chore
-        rv = client.post(f"/households/{h.id}/chores/new",
-                         data={"title": "Sweep", "assigned_to": alice.id},
-                         follow_redirects=True)
-        with app.app_context():
-            chore = Chore.query.filter_by(title="Sweep").first()
-            chore_id = chore.id
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("Logged out 'alice'", out)
 
-        client.post(f"/households/{h.id}/chores/{chore_id}/complete")
+        with patch("getpass.getpass", return_value="GoodPass!456"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="bob"))
+        self.assertIn("Logged in as 'bob'", out)
 
-        # File complaint
-        client.post(f"/households/{h.id}/chores/{chore_id}/complaint",
-                    data={"description": "Floor is still dirty!"})
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+        self.assertIn("Joined 'Integration House' as a roommate.", out)
 
-        with app.app_context():
-            chore = _db.session.get(Chore, chore_id)
-            assert chore.status == "disputed"
-            c = Complaint.query.filter_by(chore_id=chore_id).first()
-            assert c is not None
-            complaint_id = c.id
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("Logged out 'bob'", out)
 
-        # Admin upholds complaint
-        client.post(f"/households/{h.id}/complaints/{complaint_id}/resolve",
-                    data={"resolution": "Sweep again please", "outcome": "uphold"})
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+        self.assertIn("Logged in as 'alice'", out)
 
-        with app.app_context():
-            chore = _db.session.get(Chore, chore_id)
-            assert chore.status == "pending"   # reverted
-            c = _db.session.get(Complaint, complaint_id)
-            assert c.resolved is True
+        out = self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=household["id"],
+                title="Wash dishes",
+                description="Clean sink and dishes",
+                due=None,
+                assign="bob",
+            ),
+        )
+        self.assertIn("Chore 'Wash dishes' created", out)
+        self.assertIn("Assigned to: bob", out)
+
+        chore = self.get_chore_by_title("Wash dishes")
+        self.assertIsNotNone(chore)
+
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("Logged out 'alice'", out)
+
+        with patch("getpass.getpass", return_value="GoodPass!456"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="bob"))
+        self.assertIn("Logged in as 'bob'", out)
+
+        out = self.capture_output(activity.cmd_complete, Namespace(chore=chore["id"]))
+        self.assertIn("marked as complete", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+
+        out = self.capture_output(auth.cmd_logout, Namespace())
+        self.assertIn("Logged out 'bob'", out)
+
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+        self.assertIn("Logged in as 'alice'", out)
+
+        out = self.capture_output(
+            activity.cmd_dispute,
+            Namespace(chore=chore["id"], reason="Plates still had food on them."),
+        )
+        self.assertIn("Complaint filed", out)
+
+        complaint = self.get_complaint_for_chore(chore["id"])
+        self.assertIsNotNone(complaint)
+
+        out = self.capture_output(
+            activity.cmd_resolve,
+            Namespace(
+                complaint=complaint["id"],
+                outcome="uphold",
+                note="Needs to be redone.",
+            ),
+        )
+        self.assertIn("Complaint uphold", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (chore["id"],))
+        self.assertEqual(refreshed["status"], "pending")
+
+        out = self.capture_output(activity.cmd_poll, Namespace())
+        self.assertIn("Notifications:", out)
+
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=household["id"]),
+        )
+        self.assertIn("Chain integrity verified", out)
+        self.assertIn("chore.create", out)
+        self.assertIn("chore.complete", out)
+        self.assertIn("complaint.file", out)
+        self.assertIn("complaint.resolve", out)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
