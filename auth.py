@@ -16,6 +16,12 @@ https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/com
 https://github.com/danielmiessler/SecLists/tree/master/Passwords
 
 minumum chars: 8
+
+TODO:
+Password reset / password recovery
+
+Username should be HMAC
+
 """
 
 import getpass
@@ -37,7 +43,8 @@ def _load_wordlist(filename: str) -> frozenset[str]:
                 if line.strip() and not line.startswith("#")
             )
     except FileNotFoundError:
-        raise RuntimeError(f"Required wordlist not found: {path}")
+        print(f"Warning: wordlist not found: {path}. Some password checks will be skipped.")
+        return frozenset()
 
 _COMPROMISED_PASSWORDS = _load_wordlist("10k-most-common.txt")
 _DICTIONARY = _load_wordlist("common.txt")
@@ -58,7 +65,7 @@ def _hash_password(plaintext: str) -> str:
     """
     salt = secrets.token_bytes(32)
     dk = hashlib.scrypt(
-        plaintext.encode(),
+        plaintext.encode("utf-8", errors="replace"),
         salt=salt,
         n=2**14,
         r=8,
@@ -75,17 +82,16 @@ def _verify_password(plaintext: str, stored_hash: str) -> bool:
     """
     try:
         scheme, salt_hex, dk_hex = stored_hash.split(":")
+        salt = bytes.fromhex(salt_hex)
+        expected_dk = bytes.fromhex(dk_hex)
     except ValueError:
         return False
 
     if scheme != "scrypt":
         return False
 
-    salt = bytes.fromhex(salt_hex)
-    expected_dk = bytes.fromhex(dk_hex)
-
     actual_dk = hashlib.scrypt(
-        plaintext.encode(),
+        plaintext.encode("utf-8", errors="replace"),
         salt=salt,
         n=2**14,
         r=8,
@@ -141,7 +147,7 @@ def cmd_register(args) -> None:
     Register a new user account.
     Usage: python main.py register --username alice
     """
-    username = args.username or input("Username: ").strip()
+    username = (args.username or input("Username: ").strip()).strip()
     if not username:
         print("Error: username cannot be empty.")
         return
@@ -155,6 +161,9 @@ def cmd_register(args) -> None:
         return
 
     password = getpass.getpass("Password (min 8 chars): ")
+    if not password:
+        print("Error: password cannot be empty.")
+        return
 
     recipe_errors = _check_password_strength(password)
 
@@ -163,24 +172,36 @@ def cmd_register(args) -> None:
         for rule in recipe_errors:
             print(f"  • {rule}")
         return
-    
-    confirm  = getpass.getpass("Confirm password: ")
-    
+
+    confirm = getpass.getpass("Confirm password: ")
+    if not confirm:
+        print("Error: password cannot be empty.")
+        return
+
     if password != confirm:
         print("Error: passwords do not match.")
         return
-    
 
-    existing = query_one("SELECT id FROM users WHERE username = ?", (username,))
+    try:
+        existing = query_one("SELECT id FROM users WHERE username = ?", (username,))
+    except Exception:
+        print("Error: database unavailable.")
+        return
+
     if existing:
         print(f"Error: username '{username}' is already taken.")
         return
 
-    pw_hash = _hash_password(password)
-    execute(
-        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-        (username, pw_hash)
-    )
+    try:
+        pw_hash = _hash_password(password)
+        execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, pw_hash)
+        )
+    except Exception:
+        print("Error: could not create account. Please try again.")
+        return
+
     print(f"Account created for '{username}'. You can now log in.")
 
 
@@ -189,11 +210,18 @@ def cmd_login(args) -> None:
     Log in to ChoreHouse. Saves session to ~/.chorehouse_session.
     Usage: python main.py login --username alice
     """
-    username = args.username or input("Username: ").strip()
+    username = (args.username or input("Username: ").strip()).strip()
     password = getpass.getpass("Password: ")
+    if not password:
+        print("Error: password cannot be empty.")
+        return
 
-    row = query_one("SELECT id, password_hash FROM users WHERE username = ?",
-                    (username,))
+    try:
+        row = query_one("SELECT id, password_hash FROM users WHERE username = ?",
+                        (username,))
+    except Exception:
+        print("Error: database unavailable.")
+        return
 
     # Always run verify even if user not found, to resist timing attacks.
     # Dummy hash has valid format so scrypt always runs.
@@ -205,7 +233,12 @@ def cmd_login(args) -> None:
         print("Error: invalid username or password.")
         return
 
-    save_session(row["id"], username)
+    try:
+        save_session(row["id"], username)
+    except Exception:
+        print("Error: could not save session.")
+        return
+
     print(f"Logged in as '{username}'.")
 
 
@@ -214,12 +247,15 @@ def cmd_logout(args) -> None:
     Log out by removing the local session file.
     Usage: python main.py logout
     """
-    session = load_session()
-    if session:
-        clear_session()
-        print(f"Logged out '{session['username']}'.")
-    else:
-        print("No active session.")
+    try:
+        session = load_session()
+        if session:
+            clear_session()
+            print(f"Logged out '{session['username']}'.")
+        else:
+            print("No active session.")
+    except Exception:
+        print("Error: could not read session.")
 
 
 def cmd_whoami(args) -> None:
@@ -227,11 +263,14 @@ def cmd_whoami(args) -> None:
     Print the currently logged-in user.
     Usage: python main.py whoami
     """
-    session = load_session()
-    if session:
-        print(f"Logged in as: {session['username']}  (user_id={session['user_id']})")
-    else:
-        print("Not logged in.")
+    try:
+        session = load_session()
+        if session:
+            print(f"Logged in as: {session['username']}  (user_id={session['user_id']})")
+        else:
+            print("Not logged in.")
+    except Exception:
+        print("Error: could not read session.")
 
 
 # ---------------------------------------------------------------------------
