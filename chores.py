@@ -30,9 +30,21 @@ def cmd_create_chore(args) -> None:
     session  = require_session()
     require_admin(session["user_id"], args.household)
 
+
+
     title = args.title or input("Chore title: ").strip()
     if not title or len(title) > 128:
         print("Error: title must be 1–128 characters.")
+        return
+
+    # Prevent duplicate chore names within the same household
+    existing = query_one(
+        "SELECT id FROM chores WHERE household_id = ? AND title = ?",
+        (args.household, title)
+    )
+
+    if existing:
+        print(f"Error: a chore named '{title}' already exists in this household.")
         return
 
     # TODO (Person 3): validate due_date format more thoroughly
