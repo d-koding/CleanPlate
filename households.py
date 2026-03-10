@@ -19,32 +19,22 @@ from db import execute, query, query_one
 from session import require_session
 
 
-# ---------------------------------------------------------------------------
-# INVITE CODE GENERATION — Person 2 owns this
-# ---------------------------------------------------------------------------
-
 def _new_invite_code() -> str:
     """
-    Generate a cryptographically random invite code.
-
-    TODO (Person 2): Decide on length/format trade-offs.
-    Current choice: 16 URL-safe base64 characters (~96 bits of entropy).
-    That's strong enough that brute-force guessing is not feasible,
-    but short enough to share by hand or paste into a terminal.
-
-    Alternatives to consider:
-      - secrets.token_hex(8)  → 16 hex chars, easier to read aloud
-      - A word-list approach  → e.g. "apple-river-seven" (more memorable)
+    Generates a random invite code
+    (16 hex chars)
     """
-    return secrets.token_urlsafe(12)
+    return secrets.token_hex(8)
 
 
 # ---------------------------------------------------------------------------
-# AUTHORIZATION HELPERS — used by other modules too
+# Auth helpers (used by other modules too)
 # ---------------------------------------------------------------------------
 
 def get_membership(user_id: int, household_id: int) -> sqlite3.Row | None:
-    """Return the member row if user belongs to household, else None."""
+    """
+    Return the member row if user belongs to household, else None.
+    """
     return query_one(
         "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
         (user_id, household_id)
@@ -52,7 +42,9 @@ def get_membership(user_id: int, household_id: int) -> sqlite3.Row | None:
 
 
 def require_membership(user_id: int, household_id: int):
-    """Exit with error if the user is not in the household."""
+    """
+    Exit with error if the user is not in the household.
+    """
     m = get_membership(user_id, household_id)
     if m is None:
         print("Error: you are not a member of that household.")
@@ -61,7 +53,9 @@ def require_membership(user_id: int, household_id: int):
 
 
 def require_admin(user_id: int, household_id: int):
-    """Exit with error if the user is not an admin of the household."""
+    """
+    Exit with error if the user is not an admin of the household.
+    """
     m = require_membership(user_id, household_id)
     if m["role"] != "admin":
         print("Error: admin privileges required.")
@@ -70,7 +64,7 @@ def require_admin(user_id: int, household_id: int):
 
 
 # ---------------------------------------------------------------------------
-# COMMANDS
+# Commands
 # ---------------------------------------------------------------------------
 
 def cmd_create_household(args) -> None:
@@ -83,8 +77,12 @@ def cmd_create_household(args) -> None:
     if not name:
         print("Error: name cannot be empty.")
         return
-
-    # TODO (Person 2): validate name length / allowed characters
+    if len(name) > 64:
+        print("Error: household name must be 64 characters or fewer.")
+        return
+    if any(ord(c) < 32 for c in name):
+        print("Error: household name must not contain control characters.")
+        return
 
     invite_code  = _new_invite_code()
     household_id = execute(
@@ -96,8 +94,8 @@ def cmd_create_household(args) -> None:
         (session["user_id"], household_id)
     )
 
-    # TODO (Person 4): call audit.record() here once audit.py is implemented
-    # audit.record(household_id, session["user_id"], "household.create", {"name": name})
+    from activity import record
+    record(household_id, session["user_id"], "household.create", {"name": name})
 
     print(f"Household '{name}' created (id={household_id}).")
     print(f"Invite code: {invite_code}")
@@ -127,8 +125,9 @@ def cmd_join_household(args) -> None:
         (session["user_id"], row["id"])
     )
 
-    # TODO (Person 4): call audit.record() here
-    # audit.record(row["id"], session["user_id"], "membership.join", {})
+    from activity import record
+    record(row["id"], session["user_id"], "membership.join",
+           {"username": session["username"]})
 
     print(f"Joined '{row['name']}' as a roommate.")
 
@@ -171,8 +170,8 @@ def cmd_rotate_invite(args) -> None:
     execute("UPDATE households SET invite_code = ? WHERE id = ?",
             (new_code, args.id))
 
-    # TODO (Person 4): call audit.record() here
-    # audit.record(args.id, session["user_id"], "invite.rotate", {})
+    from activity import record
+    record(args.id, session["user_id"], "invite.rotate", {})
 
     print(f"New invite code: {new_code}")
     print("The previous invite code is now invalid.")
@@ -204,8 +203,9 @@ def cmd_remove_member(args) -> None:
     execute("DELETE FROM members WHERE user_id = ? AND household_id = ?",
             (target["id"], args.id))
 
-    # TODO (Person 4): call audit.record() here
-    # audit.record(args.id, session["user_id"], "membership.remove", {"removed": args.username})
+    from activity import record
+    record(args.id, session["user_id"], "membership.remove",
+           {"removed_username": args.username})
 
     print(f"'{args.username}' removed from household {args.id}.")
 
