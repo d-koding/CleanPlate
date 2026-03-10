@@ -35,6 +35,7 @@ def _get_or_create_hmac_key() -> bytes:
     is enough to forge entries). Better options:
       - Read from an environment variable: os.environ["AUDIT_HMAC_KEY"]
       - Read from a file outside the DB with restricted OS permissions
+      - PBKDF2 with a server-side secret and a household-specific salt (prevents forging across households, but still vulnerable if the server is compromised)
     For the prototype, DB storage is acceptable. Document the limitation.
     """
     row = query_one("SELECT key FROM audit_key WHERE id = 1")
