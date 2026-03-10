@@ -45,6 +45,7 @@ FULL COMMAND REFERENCE
   python3 main.py activity dispute  --chore <id> --reason "Floor still dirty"
   python3 main.py activity resolve  --complaint <id> --outcome uphold|dismiss --note "..."
   python3 main.py activity audit    --household <id>
+  python3 main.py activity poll
 
 
 EXAMPLE WALKTHROUGH
