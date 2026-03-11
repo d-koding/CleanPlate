@@ -30,9 +30,7 @@ def cmd_create_chore(args) -> None:
     session  = require_session()
     require_admin(session["user_id"], args.household)
 
-
-
-    title = args.title or input("Chore title: ").strip()
+    title = (args.title or input("Chore title: ")).strip()
     if not title or len(title) > 128:
         print("Error: title must be 1–128 characters.")
         return
