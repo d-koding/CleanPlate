@@ -10,6 +10,7 @@ Responsibilities:
 Standard library only.
 """
 
+from auth import _find_user_by_username
 from db import execute, query, query_one
 from households import require_admin, require_membership
 from session import require_session
@@ -66,7 +67,7 @@ def cmd_create_chore(args) -> None:
     assigned_to = None
 
     if args.assign:
-        target = query_one("SELECT id FROM users WHERE username = ?", (args.assign,))
+        target = _find_user_by_username(args.assign)
         if not target:
             print(f"Error: user '{args.assign}' not found.")
             return
@@ -110,7 +111,7 @@ def cmd_assign_chore(args) -> None:
 
     require_admin(session["user_id"], chore["household_id"])
 
-    target = query_one("SELECT id FROM users WHERE username = ?", (args.username,))
+    target = _find_user_by_username(args.username)
     if not target:
         print(f"Error: user '{args.username}' not found.")
         return
@@ -161,7 +162,7 @@ def cmd_list_chores(args) -> None:
     where = " AND ".join(conditions)
     rows = query(
         f"""SELECT c.id, c.title, c.status, c.due_date,
-                   u.username AS assignee, c.created_at
+                   u.display_name AS assignee, c.created_at
             FROM chores c
             LEFT JOIN users u ON u.id = c.assigned_to
             WHERE {where}
@@ -197,10 +198,10 @@ def cmd_show_chore(args) -> None:
 
     assignee = "(unassigned)"
     if chore["assigned_to"]:
-        u = query_one("SELECT username FROM users WHERE id = ?", (chore["assigned_to"],))
+        u = query_one("SELECT display_name AS username FROM users WHERE id = ?", (chore["assigned_to"],))
         assignee = u["username"] if u else "unknown"
 
-    creator = query_one("SELECT username FROM users WHERE id = ?", (chore["created_by"],))
+    creator = query_one("SELECT display_name AS username FROM users WHERE id = ?", (chore["created_by"],))
 
     print(f"\n=== Chore #{chore['id']}: {chore['title']} ===")
     print(f"Status      : {chore['status']}")
@@ -214,7 +215,7 @@ def cmd_show_chore(args) -> None:
 
     # Show any complaints
     complaints = query(
-        """SELECT c.description, c.resolved, u.username AS submitter, c.created_at
+        """SELECT c.description, c.resolved, u.display_name AS submitter, c.created_at
            FROM complaints c JOIN users u ON u.id = c.submitted_by
            WHERE c.chore_id = ?""",
         (args.chore,)

@@ -15,6 +15,7 @@ Standard library only: secrets
 import secrets
 import sqlite3
 
+from auth import _find_user_by_username
 from db import execute, query, query_one
 from session import require_session
 
@@ -147,7 +148,7 @@ def cmd_show_household(args) -> None:
     print(f"Created     : {row['created_at']}")
 
     members = query(
-        """SELECT u.username, m.role, m.joined_at
+        """SELECT u.display_name AS username, m.role, m.joined_at
            FROM members m JOIN users u ON u.id = m.user_id
            WHERE m.household_id = ?
            ORDER BY m.joined_at""",
@@ -185,12 +186,12 @@ def cmd_remove_member(args) -> None:
     session = require_session()
     require_admin(session["user_id"], args.id)
 
-    if args.username == query_one("SELECT username FROM users WHERE id = ?",
-                                  (session["user_id"],))["username"]:
+    if args.username == query_one("SELECT display_name FROM users WHERE id = ?",
+                                  (session["user_id"],))["display_name"]:
         print("Error: you cannot remove yourself.")
         return
 
-    target = query_one("SELECT id FROM users WHERE username = ?", (args.username,))
+    target = _find_user_by_username(args.username)
     if not target:
         print(f"Error: user '{args.username}' not found.")
         return

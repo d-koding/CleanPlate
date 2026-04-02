@@ -321,7 +321,7 @@ def cmd_audit(args) -> None:
         print(f"⚠ CHAIN INTEGRITY FAILED: {msg}\n")
 
     entries = query(
-        """SELECT a.seq, a.timestamp, u.username, a.action, a.details, a.entry_hash
+        """SELECT a.seq, a.timestamp, u.display_name AS username, a.action, a.details, a.entry_hash
            FROM audit_log a JOIN users u ON u.id = a.actor_id
            WHERE a.household_id = ?
            ORDER BY a.seq DESC""",
