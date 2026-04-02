@@ -54,6 +54,69 @@ _DICTIONARY = _load_wordlist("common.txt")
 # CRYPTO
 # ---------------------------------------------------------------------------
 
+def _get_or_create_username_hmac_key() -> bytes:
+    """Return the server-side HMAC key used to blind usernames at rest."""
+    row = query_one("SELECT key FROM username_key WHERE id = 1")
+    if row is None:
+        key_hex = secrets.token_hex(32)
+        execute("INSERT INTO username_key (id, key) VALUES (1, ?)", (key_hex,))
+        return bytes.fromhex(key_hex)
+    return bytes.fromhex(row["key"])
+
+
+def _normalize_username(username: str) -> str:
+    return username.strip()
+
+
+def _username_hmac(username: str) -> str:
+    key = _get_or_create_username_hmac_key()
+    normalized = _normalize_username(username).encode("utf-8", errors="replace")
+    return hmac.new(key, normalized, hashlib.sha256).hexdigest()
+
+
+def _migrate_legacy_username(row) -> None:
+    if row is None:
+        return
+
+    display_name = row["display_name"] or row["username"]
+    hashed_username = _username_hmac(display_name)
+    if row["username"] == hashed_username and row["display_name"] == display_name:
+        return
+
+    execute(
+        "UPDATE users SET username = ?, display_name = ? WHERE id = ?",
+        (hashed_username, display_name, row["id"]),
+    )
+
+
+def _find_user_by_username(username: str):
+    row = query_one(
+        "SELECT id, username, display_name, password_hash FROM users WHERE username = ?",
+        (_username_hmac(username),),
+    )
+    if row is not None:
+        if row["display_name"] is None:
+            _migrate_legacy_username(row)
+            return query_one(
+                "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+                (row["id"],),
+            )
+        return row
+
+    legacy_row = query_one(
+        """SELECT id, username, display_name, password_hash
+           FROM users
+           WHERE username = ? OR display_name = ?""",
+        (username, username),
+    )
+    if legacy_row is not None:
+        _migrate_legacy_username(legacy_row)
+        return query_one(
+            "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+            (legacy_row["id"],),
+        )
+    return None
+
 def _hash_password(plaintext: str) -> str:
     """
     Hash a password using scrypt (memory-hard, built into Python 3.6+).
@@ -197,7 +260,7 @@ def cmd_register(args) -> None:
         return
 
     try:
-        existing = query_one("SELECT id FROM users WHERE username = ?", (username,))
+        existing = _find_user_by_username(username)
     except Exception:
         print("Error: database unavailable.")
         return
@@ -209,8 +272,8 @@ def cmd_register(args) -> None:
     try:
         pw_hash = _hash_password(password)
         execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, pw_hash)
+            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
+            (_username_hmac(username), username, pw_hash)
         )
     except Exception:
         print("Error: could not create account. Please try again.")
@@ -227,7 +290,7 @@ def cmd_login(args) -> None:
     username = args.username
     if username is None:
         username = input("Username: ").strip()
-    username = username.strip()
+    username = _normalize_username(username)
     password = getattr(args, "password", None)
     if password is None:
         password = getpass.getpass("Password: ")
@@ -236,8 +299,7 @@ def cmd_login(args) -> None:
         return
 
     try:
-        row = query_one("SELECT id, password_hash FROM users WHERE username = ?",
-                        (username,))
+        row = _find_user_by_username(username)
     except Exception:
         print("Error: database unavailable.")
         return
@@ -253,12 +315,12 @@ def cmd_login(args) -> None:
         return
 
     try:
-        save_session(row["id"], username)
+        save_session(row["id"], row["display_name"])
     except Exception:
         print("Error: could not save session.")
         return
 
-    print(f"Logged in as '{username}'.")
+    print(f"Logged in as '{row['display_name']}'.")
 
 
 def cmd_reset_password(args) -> None:
@@ -278,7 +340,7 @@ def cmd_reset_password(args) -> None:
         return
 
     try:
-        row = query_one("SELECT id, password_hash FROM users WHERE username = ?", (username,))
+        row = _find_user_by_username(username)
     except Exception:
         print("Error: database unavailable.")
         return

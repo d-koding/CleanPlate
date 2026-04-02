@@ -88,15 +88,15 @@ class cleanplateTestCase(unittest.TestCase):
         return buf.getvalue()
 
     def login_as(self, username: str) -> None:
-        row = db.query_one("SELECT id FROM users WHERE username = ?", (username,))
+        row = auth._find_user_by_username(username)
         self.assertIsNotNone(row, f"User {username!r} does not exist")
         session.save_session(row["id"], username)
 
     def create_user(self, username: str, password: str = "GoodPass!123") -> int:
         pw_hash = auth._hash_password(password)
         return db.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, pw_hash),
+            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
+            (auth._username_hmac(username), username, pw_hash),
         )
 
     def get_household_by_name(self, name: str):
@@ -167,13 +167,13 @@ class TestDatabaseInitialization(cleanplateTestCase):
 
     def test_execute_query_and_query_one_work(self):
         user_id = db.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            ("alice", "hash"),
+            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
+            (auth._username_hmac("alice"), "alice", "hash"),
         )
         self.assertIsInstance(user_id, int)
 
         row = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
-        self.assertEqual(row["username"], "alice")
+        self.assertEqual(row["display_name"], "alice")
 
         rows = db.query("SELECT * FROM users")
         self.assertEqual(len(rows), 1)
@@ -231,7 +231,7 @@ class TestAuth(cleanplateTestCase):
             out = self.capture_output(auth.cmd_register, args)
         self.assertIn("Account created for 'alice'", out)
 
-        row = db.query_one("SELECT * FROM users WHERE username = ?", ("alice",))
+        row = auth._find_user_by_username("alice")
         self.assertIsNotNone(row)
 
         with patch("getpass.getpass", return_value="GoodPass!123"):
@@ -285,10 +285,7 @@ class TestAuth(cleanplateTestCase):
 
     def test_reset_password_updates_hash_and_allows_login(self):
         self.create_user("alice", "GoodPass!123")
-        original = db.query_one(
-            "SELECT password_hash FROM users WHERE username = ?",
-            ("alice",),
-        )["password_hash"]
+        original = auth._find_user_by_username("alice")["password_hash"]
 
         with patch(
             "getpass.getpass",
@@ -298,10 +295,7 @@ class TestAuth(cleanplateTestCase):
 
         self.assertIn("Password updated for 'alice'.", out)
 
-        updated = db.query_one(
-            "SELECT password_hash FROM users WHERE username = ?",
-            ("alice",),
-        )["password_hash"]
+        updated = auth._find_user_by_username("alice")["password_hash"]
         self.assertNotEqual(original, updated)
         self.assertTrue(auth._verify_password("EvenBetter!456", updated))
         self.assertFalse(auth._verify_password("GoodPass!123", updated))

@@ -10,6 +10,7 @@ Usage from any other module:
 
 import sqlite3
 import os
+from contextlib import closing
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cleanplate.db")
 
@@ -28,19 +29,19 @@ def get_conn() -> sqlite3.Connection:
 
 def query(sql: str, params: tuple = ()) -> list[sqlite3.Row]:
     """SELECT — returns all matching rows."""
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         return conn.execute(sql, params).fetchall()
 
 
 def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
     """SELECT — returns the first matching row, or None."""
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         return conn.execute(sql, params).fetchone()
 
 
 def execute(sql: str, params: tuple = ()) -> int:
     """INSERT / UPDATE / DELETE — commits and returns lastrowid."""
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         cur = conn.execute(sql, params)
         conn.commit()
         return cur.lastrowid
@@ -48,12 +49,13 @@ def execute(sql: str, params: tuple = ()) -> int:
 
 def init_db() -> None:
     """Create all tables on first run. Safe to call every startup."""
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         conn.executescript("""
             -- Users ---------------------------------------------------------
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
+                display_name  TEXT,
                 password_hash TEXT    NOT NULL,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
@@ -131,5 +133,21 @@ def init_db() -> None:
                 id  INTEGER PRIMARY KEY CHECK (id = 1),
                 key TEXT NOT NULL
             );
+
+            -- Username HMAC key (singleton) ---------------------------------
+            CREATE TABLE IF NOT EXISTS username_key (
+                id  INTEGER PRIMARY KEY CHECK (id = 1),
+                key TEXT NOT NULL
+            );
         """)
+
+        user_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "display_name" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+
+        conn.execute(
+            "UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''"
+        )
         conn.commit()
