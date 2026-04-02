@@ -147,7 +147,10 @@ def cmd_register(args) -> None:
     Register a new user account.
     Usage: python main.py register --username alice
     """
-    username = (args.username or input("Username: ").strip()).strip()
+    username = args.username
+    if username is None:
+        username = input("Username: ").strip()
+    username = username.strip()
     if not username:
         print("Error: username cannot be empty.")
         return
@@ -160,7 +163,9 @@ def cmd_register(args) -> None:
         print("Error: username may only contain letters, numbers, hyphens, and underscores.")
         return
 
-    password = getpass.getpass("Password (min 8 chars): ")
+    password = getattr(args, "password", None)
+    if password is None:
+        password = getpass.getpass("Password (min 8 chars): ")
     if not password:
         print("Error: password cannot be empty.")
         return
@@ -173,7 +178,9 @@ def cmd_register(args) -> None:
             print(f"  • {rule}")
         return
 
-    confirm = getpass.getpass("Confirm password: ")
+    confirm = getattr(args, "confirm_password", None)
+    if confirm is None:
+        confirm = getpass.getpass("Confirm password: ")
     if not confirm:
         print("Error: password cannot be empty.")
         return
@@ -210,8 +217,13 @@ def cmd_login(args) -> None:
     Log in to Cleanplate. Saves session to ~/.cleanplate_session.
     Usage: python main.py login --username alice
     """
-    username = (args.username or input("Username: ").strip()).strip()
-    password = getpass.getpass("Password: ")
+    username = args.username
+    if username is None:
+        username = input("Username: ").strip()
+    username = username.strip()
+    password = getattr(args, "password", None)
+    if password is None:
+        password = getpass.getpass("Password: ")
     if not password:
         print("Error: password cannot be empty.")
         return

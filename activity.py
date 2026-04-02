@@ -226,7 +226,9 @@ def cmd_dispute(args) -> None:
         print("Error: you can only dispute a completed chore.")
         return
 
-    reason = args.reason or input("Reason for dispute: ").strip()
+    reason = args.reason
+    if reason is None:
+        reason = input("Reason for dispute: ").strip()
     if not reason or len(reason) > 1000:
         print("Error: reason must be 1–1000 characters.")
         return
@@ -273,7 +275,9 @@ def cmd_resolve(args) -> None:
         print("Error: --outcome must be 'uphold' or 'dismiss'.")
         return
 
-    note = args.note or input("Resolution note: ").strip()
+    note = args.note
+    if note is None:
+        note = input("Resolution note: ").strip()
     new_status = "pending" if args.outcome == "uphold" else "complete"
 
     execute(

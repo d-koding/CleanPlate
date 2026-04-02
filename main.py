@@ -1,47 +1,33 @@
 """
-main.py — cleanplate CLI entry point
-Standard library only: argparse
-
-Run any command with --help to see usage, e.g.:
-    python main.py --help
-    python main.py login --help
-    python main.py chore list --help
-
-Ownership map:
-    auth.py       → Person 1  (login, register, logout, whoami)
-    households.py → Person 2  (household create/join/show/list/...)
-    chores.py     → Person 3  (chore create/assign/list/show)
-    activity.py   → Person 4  (activity complete/dispute/resolve/audit)
+main.py — cleanplate client CLI and server launcher.
 """
 
 import argparse
 
-from db import init_db
-import auth
-import households
-import chores
-import activity
+from api_server import run_server
+import client_cli
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cleanplate",
-        description="cleanplate — Secure roommate chore coordinator",
+        description="cleanplate — client CLI for the Secure Roommate Chore Coordinator",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    auth.register_subparsers(subparsers)        # Person 1
-    households.register_subparsers(subparsers)  # Person 2
-    chores.register_subparsers(subparsers)      # Person 3
-    activity.register_subparsers(subparsers)    # Person 4
+    serve = subparsers.add_parser("serve", help="Run the CleanPlate API server")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.set_defaults(func=lambda args: run_server(args.host, args.port))
+
+    client_cli.register_subparsers(subparsers)
 
     return parser
 
 
 def main() -> None:
-    init_db()   # create tables on first run; no-op after that
     parser = build_parser()
-    args   = parser.parse_args()
+    args = parser.parse_args()
     args.func(args)
 
 

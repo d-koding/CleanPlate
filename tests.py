@@ -54,6 +54,7 @@ households = importlib.import_module("households")
 activity = importlib.import_module("activity")
 chores = importlib.import_module("chores")
 main = importlib.import_module("main")
+api_server = importlib.import_module("api_server")
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +860,41 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.activity_cmd, "complete")
         self.assertEqual(args.chore, 4)
         self.assertTrue(callable(args.func))
+
+
+class TestClientServerArchitecture(cleanplateTestCase):
+    def test_server_dispatch_supports_login_and_authenticated_commands(self):
+        _, register = api_server.invoke_command(
+            "register",
+            {
+                "username": "alice",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+            },
+            None,
+        )
+        self.assertTrue(register["ok"])
+        self.assertIn("Account created", register["output"])
+
+        _, login = api_server.invoke_command(
+            "login",
+            {"username": "alice", "password": "GoodPass!123"},
+            None,
+        )
+        self.assertTrue(login["ok"])
+        self.assertEqual(login["session"]["username"], "alice")
+        self.assertFalse(os.path.exists(self.session_path))
+
+        _, create_household = api_server.invoke_command(
+            "household.create",
+            {"name": "API House"},
+            login["session"],
+        )
+        self.assertTrue(create_household["ok"])
+        self.assertIn("API House", create_household["output"])
+
+        household = self.get_household_by_name("API House")
+        self.assertIsNotNone(household)
 
 
 # ---------------------------------------------------------------------------

@@ -5,16 +5,23 @@ Standard library only. No pip install required.
 Requires Python 3.10+ (for the X | None type hint syntax).
 
 Platform: Linux / macOS. Tested on Ubuntu 22.04.
-Run on the course VM: copy the folder, run python3 main.py <command>.
+Run on the course VM: copy the folder, start the server, then run client commands.
 
 
 QUICK START
 -----------
 
+  # Terminal 1: start the server
+  python3 main.py serve
+
+  # Terminal 2: run client commands
   python3 main.py --help
   python3 main.py register --username alice
   python3 main.py login    --username alice
   python3 main.py whoami
+
+By default the client connects to http://127.0.0.1:8000.
+To use a different server, set CLEANPLATE_SERVER_URL.
 
 
 FULL COMMAND REFERENCE
@@ -85,14 +92,32 @@ EXAMPLE WALKTHROUGH
 
 FILE LAYOUT
 -----------
-  main.py        Entry point, argparse wiring
-  db.py          SQLite schema and query helpers          (shared)
-  session.py     File-based login state                   (shared)
-  auth.py        Register, login, logout, whoami          [Person 1]
-  households.py  Create, join, manage households          [Person 2]
-  chores.py      Create, assign, list chores              [Person 3]
-  activity.py    Complete, dispute, resolve, audit log    [Person 4]
+  main.py         Client entry point + server launcher
+  client_cli.py   Client-side argparse handlers and HTTP calls
+  api_client.py   JSON/HTTP client helper
+  api_server.py   HTTP server exposing command handlers
+  db.py           SQLite schema and query helpers          (server-side)
+  session.py      Client file session + request session scope
+  auth.py         Register, login, logout, whoami          [Person 1]
+  households.py   Create, join, manage households          [Person 2]
+  chores.py       Create, assign, list chores              [Person 3]
+  activity.py     Complete, dispute, resolve, audit log    [Person 4]
   Clean plate.db  Created automatically on first run
+
+
+ARCHITECTURE
+------------
+
+  Client:
+    - main.py / client_cli.py
+    - prompts the user, stores local session state, sends JSON requests
+
+  Server:
+    - api_server.py
+    - runs the business logic modules and owns all database access
+
+  Database:
+    - SQLite remains on the server side only
 
 
 SECURITY NOTES
