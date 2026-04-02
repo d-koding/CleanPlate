@@ -221,7 +221,7 @@ def cmd_register(args) -> None:
 
 def cmd_login(args) -> None:
     """
-    Log in to Cleanplate. Saves session to ~/.cleanplate_session.
+    Log in to CleanPlate. Saves session to ~/.cleanplate_session.
     Usage: python main.py login --username alice
     """
     username = args.username
@@ -388,7 +388,7 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("--username", default=None, help="Desired username")
     p.set_defaults(func=cmd_register)
 
-    p = subparsers.add_parser("login", help="Log in to Clean Plate")
+    p = subparsers.add_parser("login", help="Log in to CleanPlate")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_login)
 
