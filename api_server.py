@@ -7,8 +7,6 @@ This module exposes them over HTTP so the CLI can act as a client.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 from argparse import Namespace
 from http import HTTPStatus
@@ -19,6 +17,7 @@ import auth
 import chores
 import households
 from db import init_db
+from output_capture import capture_stdout
 from session import load_session, session_scope
 
 
@@ -51,11 +50,9 @@ def invoke_command(action: str, args: dict, session_data: dict | None) -> tuple[
     if handler is None:
         return HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown action: {action}"}
 
-    buf = io.StringIO()
-    with session_scope(session_data):
+    with session_scope(session_data), capture_stdout() as buf:
         try:
-            with contextlib.redirect_stdout(buf):
-                handler(Namespace(**args))
+            handler(Namespace(**args))
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
             return HTTPStatus.OK, {
@@ -127,13 +124,19 @@ class CleanPlateHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
 
+class CleanPlateThreadingServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def make_server(host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
     init_db()
-    return ThreadingHTTPServer((host, port), CleanPlateHandler)
+    return CleanPlateThreadingServer((host, port), CleanPlateHandler)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:

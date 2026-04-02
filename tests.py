@@ -31,6 +31,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -985,6 +986,36 @@ class TestClientServerArchitecture(cleanplateTestCase):
         )
         self.assertTrue(login["ok"])
         self.assertEqual(login["session"]["username"], "alice")
+
+    def test_server_dispatch_is_safe_for_simultaneous_sessions(self):
+        self.create_user("alice")
+        self.create_user("bob")
+
+        barrier = threading.Barrier(2)
+        outputs: dict[str, dict] = {}
+
+        def worker(name: str):
+            barrier.wait()
+            _, response = api_server.invoke_command(
+                "whoami",
+                {},
+                {"user_id": 1 if name == "alice" else 2, "username": name},
+            )
+            outputs[name] = response
+
+        threads = [
+            threading.Thread(target=worker, args=("alice",)),
+            threading.Thread(target=worker, args=("bob",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertIn("Logged in as: alice", outputs["alice"]["output"])
+        self.assertIn("Logged in as: bob", outputs["bob"]["output"])
+        self.assertNotIn("bob", outputs["alice"]["output"])
+        self.assertNotIn("alice", outputs["bob"]["output"])
 
 
 # ---------------------------------------------------------------------------

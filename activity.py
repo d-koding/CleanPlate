@@ -15,11 +15,15 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 from datetime import datetime, timezone
 
 from db import execute, query, query_one
 from households import get_membership, require_membership
 from session import require_session
+
+
+_AUDIT_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +42,13 @@ def _get_or_create_hmac_key() -> bytes:
       - PBKDF2 with a server-side secret and a household-specific salt (prevents forging across households, but still vulnerable if the server is compromised)
     For the prototype, DB storage is acceptable. Document the limitation.
     """
-    row = query_one("SELECT key FROM audit_key WHERE id = 1")
-    if row is None:
-        key_hex = secrets.token_hex(32)   # 256-bit key
-        execute("INSERT INTO audit_key (id, key) VALUES (1, ?)", (key_hex,))
-        return bytes.fromhex(key_hex)
-    return bytes.fromhex(row["key"])
+    with _AUDIT_LOCK:
+        row = query_one("SELECT key FROM audit_key WHERE id = 1")
+        if row is None:
+            key_hex = secrets.token_hex(32)   # 256-bit key
+            execute("INSERT INTO audit_key (id, key) VALUES (1, ?)", (key_hex,))
+            return bytes.fromhex(key_hex)
+        return bytes.fromhex(row["key"])
 
 
 def _compute_entry_hash(key: bytes, household_id: int, seq: int,
@@ -78,29 +83,31 @@ def record(household_id: int, actor_id: int, action: str, details: dict) -> None
     Call this INSIDE the same logical operation as the DB change it describes
     so both either succeed or fail together.
     """
-    key = _get_or_create_hmac_key()
+    with _AUDIT_LOCK:
+        key = _get_or_create_hmac_key()
 
-    # Find the last entry for this household to continue the chain
-    last = query_one(
-        "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
-        (household_id,)
-    )
-    seq       = (last["seq"] + 1) if last else 1
-    prev_hash = last["entry_hash"] if last else ("0" * 64)   # genesis sentinel
+        # Serialize sequence assignment so concurrent requests cannot create
+        # duplicate seq numbers or broken prev_hash chains for a household.
+        last = query_one(
+            "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
+            (household_id,)
+        )
+        seq = (last["seq"] + 1) if last else 1
+        prev_hash = last["entry_hash"] if last else ("0" * 64)
 
-    timestamp    = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    details_json = json.dumps(details, sort_keys=True)
-    entry_hash   = _compute_entry_hash(
-        key, household_id, seq, timestamp,
-        actor_id, action, details_json, prev_hash
-    )
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        details_json = json.dumps(details, sort_keys=True)
+        entry_hash = _compute_entry_hash(
+            key, household_id, seq, timestamp,
+            actor_id, action, details_json, prev_hash
+        )
 
-    execute(
-        """INSERT INTO audit_log
-           (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash)
-    )
+        execute(
+            """INSERT INTO audit_log
+               (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash)
+        )
 
 
 def verify_chain(household_id: int) -> tuple[bool, str]:

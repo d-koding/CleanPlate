@@ -19,10 +19,11 @@ def get_conn() -> sqlite3.Connection:
     Return an open connection with row-by-name access and FK enforcement.
     Callers are responsible for closing it, or use as a context manager.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
