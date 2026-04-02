@@ -250,6 +250,34 @@ class TestAuth(cleanplateTestCase):
         self.assertIn("Logged out 'alice'", out)
         self.assertIsNone(session.load_session())
 
+    def test_whoami_lists_all_households_for_user(self):
+        self.create_user("alice", "GoodPass!123")
+        alice = db.query_one("SELECT id FROM users WHERE username = ?", ("alice",))
+        first = db.execute(
+            "INSERT INTO households (name, invite_code) VALUES (?, ?)",
+            ("Maple House", "invite-one"),
+        )
+        second = db.execute(
+            "INSERT INTO households (name, invite_code) VALUES (?, ?)",
+            ("Oak House", "invite-two"),
+        )
+        db.execute(
+            "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, ?)",
+            (alice["id"], first, "admin"),
+        )
+        db.execute(
+            "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, ?)",
+            (alice["id"], second, "roommate"),
+        )
+
+        session.save_session(alice["id"], "alice")
+        out = self.capture_output(auth.cmd_whoami, Namespace())
+
+        self.assertIn("Logged in as: alice", out)
+        self.assertIn("Households:", out)
+        self.assertIn("Maple House", out)
+        self.assertIn("Oak House", out)
+
     def test_login_rejects_bad_password(self):
         self.create_user("alice", "GoodPass!123")
 
@@ -448,6 +476,37 @@ class TestHouseholds(cleanplateTestCase):
         self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
         out = self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
         self.assertIn("already a member", out.lower())
+
+    def test_user_can_belong_to_multiple_households(self):
+        first = self.create_household_as_alice("Clover House")
+        second = self.create_household_as_alice("Birch House")
+
+        self.login_as("bob")
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=first["invite_code"]),
+        )
+        self.assertIn("Joined 'Clover House' as a roommate.", out)
+
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=second["invite_code"]),
+        )
+        self.assertIn("Joined 'Birch House' as a roommate.", out)
+
+        memberships = db.query(
+            """SELECT h.name
+               FROM members m
+               JOIN households h ON h.id = m.household_id
+               WHERE m.user_id = ?
+               ORDER BY h.name""",
+            (self.bob_id,),
+        )
+        self.assertEqual([row["name"] for row in memberships], ["Birch House", "Clover House"])
+
+        out = self.capture_output(households.cmd_list_households, Namespace())
+        self.assertIn("Birch House", out)
+        self.assertIn("Clover House", out)
 
     def test_non_admin_cannot_rotate_invite(self):
         household = self.create_household_as_alice()

@@ -72,6 +72,10 @@ EXAMPLE WALKTHROUGH
   python3 main.py login --username bob
   python3 main.py household join --code aB3xQr_kLmN
 
+  # Bob can also join or create additional households later
+  python3 main.py household create --name "Weekend Cabin"
+  python3 main.py household list
+
   # Alice (admin) creates and assigns a chore
   python3 main.py login --username alice
   python3 main.py chore create --household 1 --title "Vacuum living room" --assign bob --due 2025-04-10
@@ -141,3 +145,9 @@ SECURITY NOTES
   HMAC key  : Stored in DB for prototype; move to env var for alpha.
   Session   : ~/.Clean plate_session (chmod 600); cleared on logout.
   Auth      : Role check on every sensitive command, not just at login.
+
+MULTI-HOUSEHOLD SUPPORT
+-----------------------
+  A single user account can belong to multiple households at the same time.
+  Membership is tracked per (user_id, household_id), and most commands already
+  scope actions by explicit household id or by the chore's household.

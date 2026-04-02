@@ -29,7 +29,7 @@ import hashlib
 import hmac
 import secrets
 from pathlib import Path
-from db import execute, query_one
+from db import execute, query, query_one
 from session import clear_session, load_session, save_session
 
 def _load_wordlist(filename: str) -> frozenset[str]:
@@ -357,6 +357,22 @@ def cmd_whoami(args) -> None:
         session = load_session()
         if session:
             print(f"Logged in as: {session['username']}  (user_id={session['user_id']})")
+            households = query(
+                """SELECT h.id, h.name, m.role
+                   FROM members m
+                   JOIN households h ON h.id = m.household_id
+                   WHERE m.user_id = ?
+                   ORDER BY h.name, h.id""",
+                (session["user_id"],),
+            )
+            if households:
+                print("Households:")
+                for household in households:
+                    print(
+                        f"  - {household['name']} (id={household['id']}, role={household['role']})"
+                    )
+            else:
+                print("Households: none")
         else:
             print("Not logged in.")
     except Exception:
