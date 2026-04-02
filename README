@@ -12,13 +12,25 @@ QUICK START
 -----------
 
   # Terminal 1: start the server
-  python3 main.py serve
+  ./cleanplate serve
 
   # Terminal 2: run client commands
-  python3 main.py --help
-  python3 main.py register --username alice
-  python3 main.py login    --username alice
-  python3 main.py whoami
+  ./cleanplate --help
+  ./cleanplate register --username alice
+  ./cleanplate login    --username alice
+  ./cleanplate whoami
+
+If the script is executable, you can also put the repo on your `PATH` and run
+`cleanplate ...` directly.
+
+Friendlier shortcuts are also supported, for example:
+`./cleanplate signup alice`
+`./cleanplate login alice`
+`./cleanplate passwd alice`
+`./cleanplate me`
+`./cleanplate create-household "Maple House"`
+`./cleanplate create-chore 1 "Take out trash"`
+`./cleanplate complete 4`
 
 By default the client connects to http://127.0.0.1:8000.
 To use a different server, set CLEANPLATE_SERVER_URL.
@@ -28,71 +40,82 @@ FULL COMMAND REFERENCE
 ----------------------
 
 -- Identity & Access (Person 1) --
-  python3 main.py register   --username <name>
-  python3 main.py login      --username <name>
-  python3 main.py reset-password --username <name>
-  python3 main.py logout
-  python3 main.py whoami
+  ./cleanplate register   --username <name>
+  ./cleanplate signup     <name>
+  ./cleanplate login      --username <name>
+  ./cleanplate login      <name>
+  ./cleanplate reset-password --username <name>
+  ./cleanplate passwd     <name>
+  ./cleanplate logout
+  ./cleanplate whoami
+  ./cleanplate me
 
 -- Household Management (Person 2) --
-  python3 main.py household create        --name "42 Elm St"
-  python3 main.py household join          --code <invite_code>
-  python3 main.py household show          --id <household_id>
-  python3 main.py household list
-  python3 main.py household rotate-invite --id <household_id>
-  python3 main.py household remove-member --id <household_id> --username bob
+  ./cleanplate household create        --name "42 Elm St"
+  ./cleanplate house create            "42 Elm St"
+  ./cleanplate create-household        "42 Elm St"
+  ./cleanplate household join          --code <invite_code>
+  ./cleanplate join-household          <invite_code>
+  ./cleanplate household show          --id <household_id>
+  ./cleanplate household list
+  ./cleanplate household rotate-invite --id <household_id>
+  ./cleanplate household remove-member --id <household_id> --username bob
 
 -- Chore Management (Person 3) --
-  python3 main.py chore create  --household <id> --title "Take out trash" [--due YYYY-MM-DD] [--assign bob]
-  python3 main.py chore assign  --chore <id> --username bob
-  python3 main.py chore list    --household <id> [--status pending|complete|disputed] [--mine]
-  python3 main.py chore show    --chore <id>
+  ./cleanplate chore create  --household <id> --title "Take out trash" [--due YYYY-MM-DD] [--assign bob]
+  ./cleanplate create-chore  <id> "Take out trash" [--due YYYY-MM-DD] [--assign bob]
+  ./cleanplate chore assign  --chore <id> --username bob
+  ./cleanplate chore list    --household <id> [--status pending|complete|disputed] [--mine]
+  ./cleanplate chore show    --chore <id>
 
 -- Activity & Completion (Person 4) --
-  python3 main.py activity complete --chore <id>
-  python3 main.py activity dispute  --chore <id> --reason "Floor still dirty"
-  python3 main.py activity resolve  --complaint <id> --outcome uphold|dismiss --note "..."
-  python3 main.py activity audit    --household <id>
-  python3 main.py activity poll
+  ./cleanplate activity complete --chore <id>
+  ./cleanplate complete          <id>
+  ./cleanplate activity dispute  --chore <id> --reason "Floor still dirty"
+  ./cleanplate activity resolve  --complaint <id> --outcome uphold|dismiss --note "..."
+  ./cleanplate activity audit    --household <id>
+  ./cleanplate audit             <household_id>
+  ./cleanplate activity poll
 
 
 EXAMPLE WALKTHROUGH
 -------------------
 
   # Two users register
-  python3 main.py register --username alice
-  python3 main.py register --username bob
+  ./cleanplate register --username alice
+  ./cleanplate register --username bob
 
   # Alice logs in and creates a household
-  python3 main.py login --username alice
-  python3 main.py household create --name "42 Elm Street"
+  ./cleanplate login --username alice
+  ./cleanplate household create --name "42 Elm Street"
   # → prints invite code, e.g. "Invite code: aB3xQr_kLmN"
 
   # Bob logs in and joins
-  python3 main.py login --username bob
-  python3 main.py household join --code aB3xQr_kLmN
+  ./cleanplate login --username bob
+  ./cleanplate household join --code aB3xQr_kLmN
 
   # Alice (admin) creates and assigns a chore
-  python3 main.py login --username alice
-  python3 main.py chore create --household 1 --title "Vacuum living room" --assign bob --due 2025-04-10
+  ./cleanplate login --username alice
+  ./cleanplate chore create --household 1 --title "Vacuum living room" --assign bob --due 2025-04-10
 
   # Bob completes the chore
-  python3 main.py login --username bob
-  python3 main.py activity complete --chore 1
+  ./cleanplate login --username bob
+  ./cleanplate activity complete --chore 1
 
   # Alice disputes it
-  python3 main.py login --username alice
-  python3 main.py activity dispute --chore 1 --reason "Missed under the couch"
+  ./cleanplate login --username alice
+  ./cleanplate activity dispute --chore 1 --reason "Missed under the couch"
 
   # Alice resolves her own dispute (uphold = bob must redo it)
-  python3 main.py activity resolve --complaint 1 --outcome uphold --note "Please redo"
+  ./cleanplate activity resolve --complaint 1 --outcome uphold --note "Please redo"
 
   # Anyone can view the audit log
-  python3 main.py activity audit --household 1
+  ./cleanplate activity audit --household 1
 
 
 FILE LAYOUT
 -----------
+  cleanplate      Shell wrapper for running the CLI
   main.py         Client entry point + server launcher
   client_cli.py   Client-side argparse handlers and HTTP calls
   api_client.py   JSON/HTTP client helper
