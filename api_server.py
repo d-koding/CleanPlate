@@ -25,6 +25,7 @@ from session import load_session, session_scope
 COMMANDS = {
     "register": auth.cmd_register,
     "login": auth.cmd_login,
+    "reset-password": auth.cmd_reset_password,
     "whoami": auth.cmd_whoami,
     "logout": auth.cmd_logout,
     "household.create": households.cmd_create_household,

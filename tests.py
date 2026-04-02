@@ -283,6 +283,55 @@ class TestAuth(cleanplateTestCase):
             out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
         self.assertIn("passwords do not match", out.lower())
 
+    def test_reset_password_updates_hash_and_allows_login(self):
+        self.create_user("alice", "GoodPass!123")
+        original = db.query_one(
+            "SELECT password_hash FROM users WHERE username = ?",
+            ("alice",),
+        )["password_hash"]
+
+        with patch(
+            "getpass.getpass",
+            side_effect=["GoodPass!123", "EvenBetter!456", "EvenBetter!456"],
+        ):
+            out = self.capture_output(auth.cmd_reset_password, Namespace(username="alice"))
+
+        self.assertIn("Password updated for 'alice'.", out)
+
+        updated = db.query_one(
+            "SELECT password_hash FROM users WHERE username = ?",
+            ("alice",),
+        )["password_hash"]
+        self.assertNotEqual(original, updated)
+        self.assertTrue(auth._verify_password("EvenBetter!456", updated))
+        self.assertFalse(auth._verify_password("GoodPass!123", updated))
+
+        with patch("getpass.getpass", return_value="EvenBetter!456"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+        self.assertIn("Logged in as 'alice'", out)
+
+    def test_reset_password_rejects_bad_current_password(self):
+        self.create_user("alice", "GoodPass!123")
+
+        with patch(
+            "getpass.getpass",
+            side_effect=["wrongpass", "EvenBetter!456", "EvenBetter!456"],
+        ):
+            out = self.capture_output(auth.cmd_reset_password, Namespace(username="alice"))
+
+        self.assertIn("invalid username or password", out.lower())
+
+    def test_reset_password_rejects_reusing_current_password(self):
+        self.create_user("alice", "GoodPass!123")
+
+        with patch(
+            "getpass.getpass",
+            side_effect=["GoodPass!123", "GoodPass!123"],
+        ):
+            out = self.capture_output(auth.cmd_reset_password, Namespace(username="alice"))
+
+        self.assertIn("must be different", out.lower())
+
 
 # ---------------------------------------------------------------------------
 # Household tests
@@ -843,6 +892,14 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.username, "alice")
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_reset_password_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["reset-password", "--username", "alice"])
+
+        self.assertEqual(args.command, "reset-password")
+        self.assertEqual(args.username, "alice")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_parses_nested_household_command(self):
         parser = main.build_parser()
         args = parser.parse_args(["household", "create", "--name", "Demo"])
@@ -895,6 +952,39 @@ class TestClientServerArchitecture(cleanplateTestCase):
 
         household = self.get_household_by_name("API House")
         self.assertIsNotNone(household)
+
+    def test_server_dispatch_supports_reset_password(self):
+        _, register = api_server.invoke_command(
+            "register",
+            {
+                "username": "alice",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+            },
+            None,
+        )
+        self.assertTrue(register["ok"])
+
+        _, reset = api_server.invoke_command(
+            "reset-password",
+            {
+                "username": "alice",
+                "current_password": "GoodPass!123",
+                "new_password": "EvenBetter!456",
+                "confirm_password": "EvenBetter!456",
+            },
+            None,
+        )
+        self.assertTrue(reset["ok"])
+        self.assertIn("Password updated", reset["output"])
+
+        _, login = api_server.invoke_command(
+            "login",
+            {"username": "alice", "password": "EvenBetter!456"},
+            None,
+        )
+        self.assertTrue(login["ok"])
+        self.assertEqual(login["session"]["username"], "alice")
 
 
 # ---------------------------------------------------------------------------

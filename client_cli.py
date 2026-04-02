@@ -74,6 +74,29 @@ def cmd_login(args) -> None:
     _handle_response(response, persist_session=True)
 
 
+def cmd_reset_password(args) -> None:
+    username = (args.username or input("Username: ").strip()).strip()
+    current_password = getpass.getpass("Current password: ")
+    new_password = getpass.getpass("New password (min 8 chars): ")
+    confirm_password = getpass.getpass("Confirm new password: ")
+
+    try:
+        response = invoke(
+            "reset-password",
+            {
+                "username": username,
+                "current_password": current_password,
+                "new_password": new_password,
+                "confirm_password": confirm_password,
+            },
+            None,
+        )
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
+
+
 def cmd_logout(args) -> None:
     session = load_session()
     if session:
@@ -193,6 +216,10 @@ def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("login", help=f"Log in via server at {get_server_url()}")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_login)
+
+    p = subparsers.add_parser("reset-password", help=f"Change your password via server at {get_server_url()}")
+    p.add_argument("--username", default=None, help="Your username")
+    p.set_defaults(func=cmd_reset_password)
 
     p = subparsers.add_parser("logout", help="Log out locally")
     p.set_defaults(func=cmd_logout)

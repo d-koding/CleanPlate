@@ -138,6 +138,25 @@ def _is_sequential(password: str) -> bool:
     return all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
 
 
+def _validate_username(username: str | None) -> str | None:
+    if username is None:
+        username = input("Username: ").strip()
+    username = username.strip()
+    if not username:
+        print("Error: username cannot be empty.")
+        return None
+
+    if len(username) < 3 or len(username) > 32:
+        print("Error: username must be between 3 and 32 characters.")
+        return None
+
+    if not username.isalnum() and not all(c.isalnum() or c in "-_" for c in username):
+        print("Error: username may only contain letters, numbers, hyphens, and underscores.")
+        return None
+
+    return username
+
+
 # ---------------------------------------------------------------------------
 # COMMANDS
 # ---------------------------------------------------------------------------
@@ -147,20 +166,8 @@ def cmd_register(args) -> None:
     Register a new user account.
     Usage: python main.py register --username alice
     """
-    username = args.username
+    username = _validate_username(args.username)
     if username is None:
-        username = input("Username: ").strip()
-    username = username.strip()
-    if not username:
-        print("Error: username cannot be empty.")
-        return
-
-    if len(username) < 3 or len(username) > 32:
-        print("Error: username must be between 3 and 32 characters.")
-        return
-
-    if not username.isalnum() and not all(c.isalnum() or c in "-_" for c in username):
-        print("Error: username may only contain letters, numbers, hyphens, and underscores.")
         return
 
     password = getattr(args, "password", None)
@@ -254,6 +261,77 @@ def cmd_login(args) -> None:
     print(f"Logged in as '{username}'.")
 
 
+def cmd_reset_password(args) -> None:
+    """
+    Reset a user's password after verifying their current password.
+    Usage: python main.py reset-password --username alice
+    """
+    username = _validate_username(getattr(args, "username", None))
+    if username is None:
+        return
+
+    current_password = getattr(args, "current_password", None)
+    if current_password is None:
+        current_password = getpass.getpass("Current password: ")
+    if not current_password:
+        print("Error: current password cannot be empty.")
+        return
+
+    try:
+        row = query_one("SELECT id, password_hash FROM users WHERE username = ?", (username,))
+    except Exception:
+        print("Error: database unavailable.")
+        return
+
+    dummy = "scrypt:" + "00" * 32 + ":" + "00" * 32
+    stored_hash = row["password_hash"] if row else dummy
+    valid = _verify_password(current_password, stored_hash)
+
+    if row is None or not valid:
+        print("Error: invalid username or password.")
+        return
+
+    new_password = getattr(args, "new_password", None)
+    if new_password is None:
+        new_password = getpass.getpass("New password (min 8 chars): ")
+    if not new_password:
+        print("Error: new password cannot be empty.")
+        return
+
+    recipe_errors = _check_password_strength(new_password)
+    if recipe_errors:
+        print("Error: ")
+        for rule in recipe_errors:
+            print(f"  • {rule}")
+        return
+
+    if _verify_password(new_password, stored_hash):
+        print("Error: new password must be different from the current password.")
+        return
+
+    confirm = getattr(args, "confirm_password", None)
+    if confirm is None:
+        confirm = getpass.getpass("Confirm new password: ")
+    if not confirm:
+        print("Error: new password confirmation cannot be empty.")
+        return
+
+    if new_password != confirm:
+        print("Error: passwords do not match.")
+        return
+
+    try:
+        execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (_hash_password(new_password), row["id"]),
+        )
+    except Exception:
+        print("Error: could not update password. Please try again.")
+        return
+
+    print(f"Password updated for '{username}'.")
+
+
 def cmd_logout(args) -> None:
     """
     Log out by removing the local session file.
@@ -297,6 +375,10 @@ def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("login", help="Log in to Clean Plate")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_login)
+
+    p = subparsers.add_parser("reset-password", help="Change your password")
+    p.add_argument("--username", default=None, help="Your username")
+    p.set_defaults(func=cmd_reset_password)
 
     p = subparsers.add_parser("logout", help="Log out")
     p.set_defaults(func=cmd_logout)

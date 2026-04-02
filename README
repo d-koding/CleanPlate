@@ -30,6 +30,7 @@ FULL COMMAND REFERENCE
 -- Identity & Access (Person 1) --
   python3 main.py register   --username <name>
   python3 main.py login      --username <name>
+  python3 main.py reset-password --username <name>
   python3 main.py logout
   python3 main.py whoami
 
