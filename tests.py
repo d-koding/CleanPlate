@@ -952,12 +952,36 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.username, "alice")
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_login_with_positional_username(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["login", "alice"])
+
+        self.assertEqual(args.command, "login")
+        self.assertEqual(args.username_pos, "alice")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_signup_alias(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["signup", "alice"])
+
+        self.assertEqual(args.command, "signup")
+        self.assertEqual(args.username_pos, "alice")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_parses_reset_password_command(self):
         parser = main.build_parser()
         args = parser.parse_args(["reset-password", "--username", "alice"])
 
         self.assertEqual(args.command, "reset-password")
         self.assertEqual(args.username, "alice")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_passwd_alias(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["passwd", "alice"])
+
+        self.assertEqual(args.command, "passwd")
+        self.assertEqual(args.username_pos, "alice")
         self.assertTrue(callable(args.func))
 
     def test_build_parser_parses_nested_household_command(self):
@@ -969,6 +993,32 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.name, "Demo")
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_house_alias_and_positional_name(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["house", "create", "Demo"])
+
+        self.assertEqual(args.command, "house")
+        self.assertEqual(args.household_cmd, "create")
+        self.assertEqual(args.name_pos, "Demo")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_flat_create_household_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["create-household", "Demo"])
+
+        self.assertEqual(args.command, "create-household")
+        self.assertEqual(args.name, "Demo")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_flat_create_chore_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["create-chore", "3", "Take out trash"])
+
+        self.assertEqual(args.command, "create-chore")
+        self.assertEqual(args.household, 3)
+        self.assertEqual(args.title, "Take out trash")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_parses_nested_activity_command(self):
         parser = main.build_parser()
         args = parser.parse_args(["activity", "complete", "--chore", "4"])
@@ -976,6 +1026,21 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.command, "activity")
         self.assertEqual(args.activity_cmd, "complete")
         self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_flat_complete_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["complete", "4"])
+
+        self.assertEqual(args.command, "complete")
+        self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_me_alias(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["me"])
+
+        self.assertEqual(args.command, "me")
         self.assertTrue(callable(args.func))
 
 
