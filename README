@@ -14,16 +14,42 @@ QUICK START
   # Terminal 1: start the server
   ./cleanplate serve
 
-  # Terminal 2: run client commands
-  ./cleanplate --help
-  ./cleanplate register --username alice
-  ./cleanplate login    --username alice
-  ./cleanplate whoami
+  # Terminal 2: open the interactive shell
+  ./cleanplate interactive
+  cleanplate> signup alice
+  cleanplate> login alice
+  cleanplate> create-household "42 Elm Street"
+  cleanplate> household list
+  cleanplate> exit
 
 If the script is executable, you can also put the repo on your `PATH` and run
 `cleanplate ...` directly.
 
-Friendlier shortcuts are also supported, for example:
+PRIMARY USAGE
+-------------
+
+The intended way to use CleanPlate is as one continuous command session:
+
+  ./cleanplate interactive
+
+Inside the session, type regular commands without restarting the app each time:
+
+  cleanplate> signup alice
+  cleanplate> login alice
+  cleanplate> me
+  cleanplate> create-household "Maple House"
+  cleanplate> create-chore 1 "Take out trash"
+  cleanplate> complete 4
+  cleanplate> help
+  cleanplate> exit
+
+`shell` and `repl` are aliases for `interactive`.
+
+ONE-SHOT MODE
+-------------
+
+You can still run single commands directly from your shell when needed:
+
 `./cleanplate signup alice`
 `./cleanplate login alice`
 `./cleanplate passwd alice`
@@ -38,6 +64,8 @@ To use a different server, set CLEANPLATE_SERVER_URL.
 
 FULL COMMAND REFERENCE
 ----------------------
+
+These commands work both inside `./cleanplate interactive` and as direct shell commands.
 
 -- Identity & Access (Person 1) --
   ./cleanplate register   --username <name>
@@ -81,40 +109,44 @@ FULL COMMAND REFERENCE
 EXAMPLE WALKTHROUGH
 -------------------
 
+  # Start one continuous command session
+  ./cleanplate interactive
+
   # Two users register
-  ./cleanplate register --username alice
-  ./cleanplate register --username bob
+  cleanplate> signup alice
+  cleanplate> signup bob
 
   # Alice logs in and creates a household
-  ./cleanplate login --username alice
-  ./cleanplate household create --name "42 Elm Street"
+  cleanplate> login alice
+  cleanplate> create-household "42 Elm Street"
   # → prints invite code, e.g. "Invite code: aB3xQr_kLmN"
 
   # Bob logs in and joins
-  ./cleanplate login --username bob
-  ./cleanplate household join --code aB3xQr_kLmN
+  cleanplate> login bob
+  cleanplate> join-household aB3xQr_kLmN
 
   # Bob can also join or create additional households later
-  python3 main.py household create --name "Weekend Cabin"
-  python3 main.py household list
+  cleanplate> create-household "Weekend Cabin"
+  cleanplate> household list
 
   # Alice (admin) creates and assigns a chore
-  ./cleanplate login --username alice
-  ./cleanplate chore create --household 1 --title "Vacuum living room" --assign bob --due 2025-04-10
+  cleanplate> login alice
+  cleanplate> create-chore 1 "Vacuum living room" --assign bob --due 2025-04-10
 
   # Bob completes the chore
-  ./cleanplate login --username bob
-  ./cleanplate activity complete --chore 1
+  cleanplate> login bob
+  cleanplate> complete 1
 
   # Alice disputes it
-  ./cleanplate login --username alice
-  ./cleanplate activity dispute --chore 1 --reason "Missed under the couch"
+  cleanplate> login alice
+  cleanplate> activity dispute --chore 1 --reason "Missed under the couch"
 
   # Alice resolves her own dispute (uphold = bob must redo it)
-  ./cleanplate activity resolve --complaint 1 --outcome uphold --note "Please redo"
+  cleanplate> activity resolve --complaint 1 --outcome uphold --note "Please redo"
 
   # Anyone can view the audit log
-  ./cleanplate activity audit --household 1
+  cleanplate> audit 1
+  cleanplate> exit
 
 
 FILE LAYOUT
