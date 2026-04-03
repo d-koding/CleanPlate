@@ -252,7 +252,7 @@ class TestAuth(cleanplateTestCase):
 
     def test_whoami_lists_all_households_for_user(self):
         self.create_user("alice", "GoodPass!123")
-        alice = db.query_one("SELECT id FROM users WHERE username = ?", ("alice",))
+        alice = auth._find_user_by_username("alice")
         first = db.execute(
             "INSERT INTO households (name, invite_code) VALUES (?, ?)",
             ("Maple House", "invite-one"),
@@ -1036,6 +1036,54 @@ class TestMainParser(cleanplateTestCase):
 
         self.assertEqual(args.command, "me")
         self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_interactive_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["interactive"])
+
+        self.assertEqual(args.command, "interactive")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_shell_alias(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["shell"])
+
+        self.assertEqual(args.command, "shell")
+        self.assertTrue(callable(args.func))
+
+
+class TestInteractiveShell(cleanplateTestCase):
+    def test_interactive_shell_dispatches_commands_until_exit(self):
+        parser = main.build_parser()
+        called = []
+
+        def fake_login(args):
+            called.append(("login", args.username_pos))
+
+        parser._subparsers._group_actions[0].choices["login"].set_defaults(func=fake_login)
+
+        with patch("builtins.input", side_effect=["login alice", "exit"]):
+            out = self.capture_output(main._run_interactive_shell, parser)
+
+        self.assertIn("Interactive CleanPlate shell", out)
+        self.assertEqual(called, [("login", "alice")])
+
+    def test_interactive_shell_shows_parser_help(self):
+        parser = main.build_parser()
+
+        with patch("builtins.input", side_effect=["help", "exit"]):
+            out = self.capture_output(main._run_interactive_shell, parser)
+
+        self.assertIn("usage: cleanplate", out)
+
+    def test_interactive_shell_handles_parse_error_and_continues(self):
+        parser = main.build_parser()
+
+        with patch("builtins.input", side_effect=["not-a-command", "exit"]):
+            out = self.capture_output(main._run_interactive_shell, parser)
+
+        self.assertIn("invalid choice", out)
+        self.assertIn("Interactive CleanPlate shell", out)
 
 
 class TestClientServerArchitecture(cleanplateTestCase):
