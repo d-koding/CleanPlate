@@ -32,6 +32,7 @@ COMMANDS = {
     "household.show": households.cmd_show_household,
     "household.list": households.cmd_list_households,
     "household.rotate-invite": households.cmd_rotate_invite,
+    "chore.reschedule": chores.cmd_reschedule_chore,
     "household.remove-member": households.cmd_remove_member,
     "chore.create": chores.cmd_create_chore,
     "chore.assign": chores.cmd_assign_chore,

@@ -230,6 +230,14 @@ def cmd_poll(args) -> None:
     _remote_command("activity.poll", {})
 
 
+def cmd_reschedule_chore(args) -> None:
+    chore_id = _arg(args, "chore", "chore_pos")
+    _remote_command(
+        "chore.reschedule",
+        {"chore": chore_id, "due": args.due},
+    )
+
+
 def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("register", aliases=["signup", "sign-up"], help="Create a new user account")
     p.add_argument("username_pos", nargs="?", help="Desired username")
@@ -327,6 +335,13 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--overdue", action="store_true", help="Show overdue chores")
     c.set_defaults(household=None)
     c.set_defaults(func=cmd_list_chores)
+
+    c = sub.add_parser("reschedule", help="Update a chore due date (admin only)")
+    c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")
+    c.add_argument("--chore", dest="chore", type=int, default=None, metavar="CHORE_ID")
+    c.add_argument("--due", required=True, metavar="YYYY-MM-DD")
+    c.set_defaults(chore=None)
+    c.set_defaults(func=cmd_reschedule_chore)
 
     c = sub.add_parser("show", help="Show full details of a chore")
     c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")

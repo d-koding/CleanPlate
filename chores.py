@@ -283,6 +283,45 @@ def cmd_show_chore(args) -> None:
             status = "resolved" if c["resolved"] else "open"
             print(f"  [{status}] {c['submitter']}: {c['description']}")
 
+def cmd_reschedule_chore(args) -> None:
+    session = require_session()
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (args.chore,))
+    if not chore:
+        print(f"Error: chore {args.chore} not found.")
+        return
+
+    require_admin(session["user_id"], chore["household_id"])
+
+    due_date = args.due
+    if due_date is None:
+        due_date = input("New due date (YYYY-MM-DD): ").strip()
+
+    try:
+        parsed_date = datetime.strptime(due_date, "%Y-%m-%d").date()
+    except ValueError:
+        print("Error: due date must be in YYYY-MM-DD format.")
+        return
+
+    if parsed_date < datetime.now(timezone.utc).date():
+        print("Error: due date cannot be in the past.")
+        return
+
+    execute(
+        "UPDATE chores SET due_date = ? WHERE id = ?",
+        (due_date, args.chore)
+    )
+
+    record(
+        chore["household_id"],
+        session["user_id"],
+        "chore.reschedule",
+        {"chore_id": args.chore, "due_date": due_date}
+    )
+
+    print(f"Chore {args.chore} due date updated to {due_date}.")
+
+
 
 # ---------------------------------------------------------------------------
 # Subparser registration
@@ -306,6 +345,13 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--chore",    type=int, required=True, metavar="CHORE_ID")
     c.add_argument("--username", required=True)
     c.set_defaults(func=cmd_assign_chore)
+    
+
+    c = sub.add_parser("reschedule", help="Update a chore due date (admin only)")
+    c.add_argument("--chore", type=int, required=True, metavar="CHORE_ID")
+    c.add_argument("--due", required=True, metavar="YYYY-MM-DD")
+    c.set_defaults(func=cmd_reschedule_chore)
+
 
     # list
     c = sub.add_parser("list", help="List chores in a household")
