@@ -157,6 +157,7 @@ class TestDatabaseInitialization(cleanplateTestCase):
         expected = {
             "audit_key",
             "audit_log",
+            "chore_assignees",
             "chores",
             "complaints",
             "households",
@@ -252,7 +253,7 @@ class TestAuth(cleanplateTestCase):
 
     def test_whoami_lists_all_households_for_user(self):
         self.create_user("alice", "GoodPass!123")
-        alice = db.query_one("SELECT id FROM users WHERE username = ?", ("alice",))
+        alice = auth._find_user_by_username("alice")
         first = db.execute(
             "INSERT INTO households (name, invite_code) VALUES (?, ?)",
             ("Maple House", "invite-one"),
@@ -519,6 +520,7 @@ class TestChores(cleanplateTestCase):
         super().setUp()
         self.alice_id = self.create_user("alice")
         self.bob_id = self.create_user("bob")
+        self.cara_id = self.create_user("cara")
 
         self.login_as("alice")
         self.capture_output(households.cmd_create_household, Namespace(name="Test Home"))
@@ -540,7 +542,7 @@ class TestChores(cleanplateTestCase):
                 title="Wash dishes",
                 description="Kitchen sink and drying rack",
                 due=None,
-                assign="bob",
+                assign=["bob"],
             ),
         )
         self.assertIn("Chore 'Wash dishes' created", out)
@@ -548,7 +550,11 @@ class TestChores(cleanplateTestCase):
 
         chore = self.get_chore_by_title("Wash dishes")
         self.assertIsNotNone(chore)
-        self.assertEqual(chore["assigned_to"], self.bob_id)
+        assignees = db.query(
+            "SELECT user_id FROM chore_assignees WHERE chore_id = ?",
+            (chore["id"],),
+        )
+        self.assertEqual([row["user_id"] for row in assignees], [self.bob_id])
 
         audit_row = db.query_one(
             "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
@@ -564,7 +570,7 @@ class TestChores(cleanplateTestCase):
                 title="Vacuum",
                 description="Living room",
                 due=None,
-                assign=None,
+                assign=[],
             ),
         )
         chore = self.get_chore_by_title("Vacuum")
@@ -577,6 +583,11 @@ class TestChores(cleanplateTestCase):
 
         refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (chore["id"],))
         self.assertEqual(refreshed["assigned_to"], self.bob_id)
+        assignees = db.query(
+            "SELECT user_id FROM chore_assignees WHERE chore_id = ?",
+            (chore["id"],),
+        )
+        self.assertEqual([row["user_id"] for row in assignees], [self.bob_id])
 
         audit_row = db.query_one(
             "SELECT * FROM audit_log WHERE action = ? AND household_id = ?",
@@ -592,7 +603,7 @@ class TestChores(cleanplateTestCase):
                 title="Laundry",
                 description="Wash towels",
                 due=None,
-                assign="bob",
+                assign=["bob"],
             ),
         )
         chore = self.get_chore_by_title("Laundry")
@@ -618,14 +629,14 @@ class TestChores(cleanplateTestCase):
     def test_create_chore_rejects_empty_title(self):
         out = self.capture_output(
             chores.cmd_create_chore,
-            Namespace(household=self.household["id"], title="", description="", due=None, assign=None),
+            Namespace(household=self.household["id"], title="", description="", due=None, assign=[]),
         )
         self.assertIn("title must be", out.lower())
 
     def test_create_chore_rejects_past_due_date(self):
         out = self.capture_output(
             chores.cmd_create_chore,
-            Namespace(household=self.household["id"], title="Trash", description="", due="2000-01-01", assign=None),
+            Namespace(household=self.household["id"], title="Trash", description="", due="2000-01-01", assign=[]),
         )
         self.assertIn("cannot be in the past", out.lower())
 
@@ -633,8 +644,35 @@ class TestChores(cleanplateTestCase):
         self.login_as("bob")
         with self.assertRaises(SystemExit):
             chores.cmd_create_chore(
-                Namespace(household=self.household["id"], title="Trash", description="", due=None, assign=None)
+                Namespace(household=self.household["id"], title="Trash", description="", due=None, assign=[])
             )
+
+    def test_create_chore_supports_multiple_assignees(self):
+        self.login_as("cara")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=self.household["invite_code"]),
+        )
+        self.login_as("alice")
+
+        out = self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household=self.household["id"],
+                title="Mop floors",
+                description="Kitchen and hallway",
+                due=None,
+                assign=["bob", "cara"],
+            ),
+        )
+
+        self.assertIn("Assigned to: bob, cara", out)
+        chore = self.get_chore_by_title("Mop floors")
+        assignees = db.query(
+            "SELECT user_id FROM chore_assignees WHERE chore_id = ? ORDER BY user_id",
+            (chore["id"],),
+        )
+        self.assertEqual([row["user_id"] for row in assignees], [self.bob_id, self.cara_id])
 
 
 # ---------------------------------------------------------------------------
@@ -672,7 +710,7 @@ class TestActivity(cleanplateTestCase):
                 title="Take out trash",
                 description="Bins to curb",
                 due=None,
-                assign="bob",
+                assign=["bob"],
             ),
         )
         self.chore = self.get_chore_by_title("Take out trash")
@@ -710,6 +748,20 @@ class TestActivity(cleanplateTestCase):
 
     def test_admin_can_complete_any_household_chore(self):
         self.login_as("alice")
+        out = self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        self.assertIn("marked as complete", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+
+    def test_any_assignee_can_complete_shared_chore(self):
+        self.login_as("alice")
+        self.capture_output(
+            chores.cmd_assign_chore,
+            Namespace(chore=self.chore["id"], username="cara"),
+        )
+
+        self.login_as("cara")
         out = self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
         self.assertIn("marked as complete", out)
 
@@ -1192,7 +1244,7 @@ class TestIntegrationWorkflow(cleanplateTestCase):
                 title="Wash dishes",
                 description="Clean sink and dishes",
                 due=None,
-                assign="bob",
+                assign=["bob"],
             ),
         )
         self.assertIn("Chore 'Wash dishes' created", out)

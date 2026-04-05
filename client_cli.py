@@ -172,7 +172,7 @@ def cmd_create_chore(args) -> None:
             "title": title,
             "description": args.description,
             "due": args.due,
-            "assign": args.assign,
+            "assign": args.assign or [],
         },
     )
 
@@ -307,7 +307,7 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--title", dest="title", default=None)
     c.add_argument("--description", default="")
     c.add_argument("--due", default=None, metavar="YYYY-MM-DD")
-    c.add_argument("--assign", default=None, metavar="USERNAME")
+    c.add_argument("--assign", action="append", default=[], metavar="USERNAME")
     c.set_defaults(household=None, title=None)
     c.set_defaults(func=cmd_create_chore)
 
@@ -380,7 +380,7 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("title", nargs="?", help="Chore title")
     p.add_argument("--description", default="")
     p.add_argument("--due", default=None, metavar="YYYY-MM-DD")
-    p.add_argument("--assign", default=None, metavar="USERNAME")
+    p.add_argument("--assign", action="append", default=[], metavar="USERNAME")
     p.set_defaults(func=cmd_create_chore)
 
     p = subparsers.add_parser("complete", help="Complete a chore with a flat command")

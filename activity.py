@@ -195,8 +195,13 @@ def cmd_complete(args) -> None:
         print("Chore is already marked complete.")
         return
 
+    is_assigned = query_one(
+        "SELECT 1 FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+        (args.chore, session["user_id"]),
+    )
+
     # Authorization: roommates may only complete their own assigned chores
-    if membership["role"] != "admin" and chore["assigned_to"] != session["user_id"]:
+    if membership["role"] != "admin" and not is_assigned:
         print("Error: you can only complete chores assigned to you.")
         return
 
