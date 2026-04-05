@@ -39,14 +39,17 @@ def cmd_create_chore(args) -> None:
         print("Error: title must be 1–128 characters.")
         return
 
-    # Prevent duplicate chore names within the same household
     existing = query_one(
-        "SELECT id FROM chores WHERE household_id = ? AND title = ?",
+        """SELECT id
+        FROM chores
+        WHERE household_id = ?
+            AND title = ?
+            AND status != 'complete'""",
         (args.household, title)
     )
 
     if existing:
-        print(f"Error: a chore named '{title}' already exists in this household.")
+        print(f"Error: an active chore named '{title}' already exists in this household.")
         return
 
     # TODO (Person 3): validate due_date format more thoroughly
