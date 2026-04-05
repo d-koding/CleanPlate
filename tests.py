@@ -754,6 +754,34 @@ class TestActivity(cleanplateTestCase):
         refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
         self.assertEqual(refreshed["status"], "complete")
 
+    def test_assignee_can_mark_completed_chore_incomplete(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        out = self.capture_output(activity.cmd_incomplete, Namespace(chore=self.chore["id"]))
+        self.assertIn("marked as incomplete", out)
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "pending")
+        self.assertIsNone(refreshed["completed_at"])
+
+        audit_row = db.query_one(
+            "SELECT * FROM audit_log WHERE action = ? AND household_id = ?",
+            ("chore.incomplete", self.household["id"]),
+        )
+        self.assertIsNotNone(audit_row)
+
+    def test_roommate_cannot_mark_other_users_chore_incomplete(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("cara")
+        out = self.capture_output(activity.cmd_incomplete, Namespace(chore=self.chore["id"]))
+        self.assertIn("mark chores assigned to you as incomplete", out.lower())
+
+        refreshed = db.query_one("SELECT * FROM chores WHERE id = ?", (self.chore["id"],))
+        self.assertEqual(refreshed["status"], "complete")
+
     def test_any_assignee_can_complete_shared_chore(self):
         self.login_as("alice")
         self.capture_output(

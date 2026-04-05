@@ -39,6 +39,7 @@ COMMANDS = {
     "chore.list": chores.cmd_list_chores,
     "chore.show": chores.cmd_show_chore,
     "activity.complete": activity.cmd_complete,
+    "activity.incomplete": activity.cmd_incomplete,
     "activity.dispute": activity.cmd_dispute,
     "activity.resolve": activity.cmd_resolve,
     "activity.audit": activity.cmd_audit,
