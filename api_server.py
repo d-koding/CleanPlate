@@ -7,6 +7,7 @@ This module exposes them over HTTP so the CLI can act as a client.
 
 from __future__ import annotations
 
+import errno
 import json
 from argparse import Namespace
 from http import HTTPStatus
@@ -142,6 +143,12 @@ def make_server(host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServe
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
-    server = make_server(host, port)
+    try:
+        server = make_server(host, port)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"Error: a CleanPlate server is already running on http://{host}:{port}")
+            return
+        raise
     print(f"CleanPlate server listening on http://{host}:{port}")
     server.serve_forever()
