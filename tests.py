@@ -386,6 +386,18 @@ class TestHouseholds(cleanplateTestCase):
         self.assertIsNotNone(member)
         self.assertEqual(member["role"], "admin")
 
+    def test_create_household_rejects_explicit_empty_name(self):
+        self.login_as("alice")
+        out = self.capture_output(households.cmd_create_household, Namespace(name=""))
+
+        self.assertIn("name cannot be empty", out.lower())
+
+    def test_create_household_rejects_stale_session_user(self):
+        session.save_session(9999, "ghost")
+        out = self.capture_output(households.cmd_create_household, Namespace(name="Ghost House"))
+
+        self.assertIn("please log in again", out.lower())
+
     def test_join_household_with_invite_code(self):
         household = self.create_household_as_alice()
 
@@ -1232,6 +1244,32 @@ class TestClientServerArchitecture(cleanplateTestCase):
         )
         self.assertTrue(login["ok"])
         self.assertEqual(login["session"]["username"], "alice")
+
+    def test_server_dispatch_rejects_empty_household_name(self):
+        _, register = api_server.invoke_command(
+            "register",
+            {
+                "username": "alice",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+            },
+            None,
+        )
+        self.assertTrue(register["ok"])
+
+        _, login = api_server.invoke_command(
+            "login",
+            {"username": "alice", "password": "GoodPass!123"},
+            None,
+        )
+        self.assertTrue(login["ok"])
+
+        _, create_household = api_server.invoke_command(
+            "household.create",
+            {"name": ""},
+            login["session"],
+        )
+        self.assertIn("name cannot be empty", create_household["output"].lower())
 
     def test_server_dispatch_is_safe_for_simultaneous_sessions(self):
         self.create_user("alice")

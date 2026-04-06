@@ -74,7 +74,11 @@ def cmd_create_household(args) -> None:
     Usage: python main.py household create --name "42 Elm St"
     """
     session = require_session()
-    name = args.name or input("Household name: ").strip()
+    name = args.name
+    if name is None:
+        name = input("Household name: ").strip()
+    else:
+        name = name.strip()
     if not name:
         print("Error: name cannot be empty.")
         return
@@ -83,6 +87,10 @@ def cmd_create_household(args) -> None:
         return
     if any(ord(c) < 32 for c in name):
         print("Error: household name must not contain control characters.")
+        return
+    user_row = query_one("SELECT id FROM users WHERE id = ?", (session["user_id"],))
+    if user_row is None:
+        print("Error: current session user does not exist. Please log in again.")
         return
 
     invite_code  = _new_invite_code()

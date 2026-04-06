@@ -133,7 +133,9 @@ def _remote_command(action: str, payload: dict) -> None:
 
 
 def cmd_create_household(args) -> None:
-    name = _arg(args, "name", "name_pos") or input("Household name: ").strip()
+    name = _arg(args, "name", "name_pos")
+    if name is None:
+        name = input("Household name: ").strip()
     _remote_command("household.create", {"name": name})
 
 
