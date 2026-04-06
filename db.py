@@ -93,6 +93,14 @@ def init_db() -> None:
                 completed_at TEXT
             );
 
+            -- Chore assignees (many-to-many) ---------------------------------
+            CREATE TABLE IF NOT EXISTS chore_assignees (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                chore_id INTEGER NOT NULL REFERENCES chores(id) ON DELETE CASCADE,
+                user_id  INTEGER NOT NULL REFERENCES users(id),
+                UNIQUE (chore_id, user_id)
+            );
+
             -- Complaints -----------------------------------------------------
             CREATE TABLE IF NOT EXISTS complaints (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,5 +158,11 @@ def init_db() -> None:
 
         conn.execute(
             "UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''"
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO chore_assignees (chore_id, user_id)
+               SELECT id, assigned_to
+               FROM chores
+               WHERE assigned_to IS NOT NULL"""
         )
         conn.commit()

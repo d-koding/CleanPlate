@@ -19,6 +19,52 @@ from activity import record
 
 
 # ---------------------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------------------
+
+def _resolve_assignees(household_id: int, usernames: list[str]) -> tuple[list[tuple[int, str]], str | None]:
+    assignees: list[tuple[int, str]] = []
+    seen: set[int] = set()
+
+    for username in usernames:
+        target = _find_user_by_username(username)
+        if not target:
+            return [], f"Error: user '{username}' not found."
+        if not query_one(
+            "SELECT id FROM members WHERE user_id = ? AND household_id = ?",
+            (target["id"], household_id),
+        ):
+            return [], f"Error: '{username}' is not a member of this household."
+        if target["id"] in seen:
+            continue
+        seen.add(target["id"])
+        assignees.append((target["id"], username))
+
+    return assignees, None
+
+
+def _set_chore_assignees(chore_id: int, assignees: list[tuple[int, str]]) -> None:
+    execute("DELETE FROM chore_assignees WHERE chore_id = ?", (chore_id,))
+    for user_id, _ in assignees:
+        execute(
+            "INSERT OR IGNORE INTO chore_assignees (chore_id, user_id) VALUES (?, ?)",
+            (chore_id, user_id),
+        )
+
+
+def _get_chore_assignees(chore_id: int) -> list[str]:
+    rows = query(
+        """SELECT u.display_name
+           FROM chore_assignees ca
+           JOIN users u ON u.id = ca.user_id
+           WHERE ca.chore_id = ?
+           ORDER BY u.display_name""",
+        (chore_id,),
+    )
+    return [row["display_name"] for row in rows]
+
+
+# ---------------------------------------------------------------------------
 # COMMANDS
 # ---------------------------------------------------------------------------
 
@@ -39,14 +85,17 @@ def cmd_create_chore(args) -> None:
         print("Error: title must be 1–128 characters.")
         return
 
-    # Prevent duplicate chore names within the same household
     existing = query_one(
-        "SELECT id FROM chores WHERE household_id = ? AND title = ?",
+        """SELECT id
+        FROM chores
+        WHERE household_id = ?
+            AND title = ?
+            AND status != 'complete'""",
         (args.household, title)
     )
 
     if existing:
-        print(f"Error: a chore named '{title}' already exists in this household.")
+        print(f"Error: an active chore named '{title}' already exists in this household.")
         return
 
     # TODO (Person 3): validate due_date format more thoroughly
@@ -64,19 +113,15 @@ def cmd_create_chore(args) -> None:
             return
 
     description = args.description or ""
-    assigned_to = None
-
-    if args.assign:
-        target = _find_user_by_username(args.assign)
-        if not target:
-            print(f"Error: user '{args.assign}' not found.")
-            return
-        # Verify the assignee is in the household
-        if not query_one("SELECT id FROM members WHERE user_id = ? AND household_id = ?",
-                         (target["id"], args.household)):
-            print(f"Error: '{args.assign}' is not a member of this household.")
-            return
-        assigned_to = target["id"]
+    if isinstance(args.assign, str):
+        assign_usernames = [args.assign]
+    else:
+        assign_usernames = args.assign or []
+    assignees, error = _resolve_assignees(args.household, assign_usernames)
+    if error:
+        print(error)
+        return
+    assigned_to = assignees[0][0] if assignees else None
 
     chore_id = execute(
         """INSERT INTO chores
@@ -84,6 +129,7 @@ def cmd_create_chore(args) -> None:
            VALUES (?, ?, ?, ?, ?, ?)""",
         (args.household, title, description, assigned_to, due_date, session["user_id"])
     )
+    _set_chore_assignees(chore_id, assignees)
 
     record(
         args.household,
@@ -93,8 +139,8 @@ def cmd_create_chore(args) -> None:
     )
 
     print(f"Chore '{title}' created (id={chore_id}).")
-    if assigned_to:
-        print(f"Assigned to: {args.assign}")
+    if assignees:
+        print(f"Assigned to: {', '.join(username for _, username in assignees)}")
 
 
 def cmd_assign_chore(args) -> None:
@@ -111,26 +157,34 @@ def cmd_assign_chore(args) -> None:
 
     require_admin(session["user_id"], chore["household_id"])
 
-    target = _find_user_by_username(args.username)
-    if not target:
-        print(f"Error: user '{args.username}' not found.")
+    assignees, error = _resolve_assignees(chore["household_id"], [args.username])
+    if error:
+        print(error)
         return
-    if not query_one("SELECT id FROM members WHERE user_id = ? AND household_id = ?",
-                     (target["id"], chore["household_id"])):
-        print(f"Error: '{args.username}' is not in this household.")
+    target_id, target_name = assignees[0]
+
+    if query_one(
+        "SELECT id FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+        (args.chore, target_id),
+    ):
+        print(f"'{target_name}' is already assigned to chore {args.chore}.")
         return
 
-    execute("UPDATE chores SET assigned_to = ? WHERE id = ?",
-            (target["id"], args.chore))
+    execute(
+        "INSERT INTO chore_assignees (chore_id, user_id) VALUES (?, ?)",
+        (args.chore, target_id),
+    )
+    if chore["assigned_to"] is None:
+        execute("UPDATE chores SET assigned_to = ? WHERE id = ?", (target_id, args.chore))
 
     record(
         chore["household_id"],
         session["user_id"],
         "chore.assign",
-        {"chore_id": args.chore, "assigned_to": args.username}
+        {"chore_id": args.chore, "assigned_to": target_name}
     )
 
-    print(f"Chore {args.chore} assigned to '{args.username}'.")
+    print(f"Chore {args.chore} assigned to '{target_name}'.")
 
 
 def cmd_list_chores(args) -> None:
@@ -151,7 +205,9 @@ def cmd_list_chores(args) -> None:
         params.append(args.status)
 
     if args.mine:
-        conditions.append("c.assigned_to = ?")
+        conditions.append(
+            "EXISTS (SELECT 1 FROM chore_assignees ca WHERE ca.chore_id = c.id AND ca.user_id = ?)"
+        )
         params.append(session["user_id"])
 
     if args.overdue:
@@ -162,10 +218,13 @@ def cmd_list_chores(args) -> None:
     where = " AND ".join(conditions)
     rows = query(
         f"""SELECT c.id, c.title, c.status, c.due_date,
-                   u.display_name AS assignee, c.created_at
+                   GROUP_CONCAT(u.display_name, ', ') AS assignees,
+                   c.created_at
             FROM chores c
-            LEFT JOIN users u ON u.id = c.assigned_to
+            LEFT JOIN chore_assignees ca ON ca.chore_id = c.id
+            LEFT JOIN users u ON u.id = ca.user_id
             WHERE {where}
+            GROUP BY c.id, c.title, c.status, c.due_date, c.created_at
             ORDER BY c.due_date NULLS LAST, c.created_at""",
         tuple(params)
     )
@@ -177,7 +236,7 @@ def cmd_list_chores(args) -> None:
     print(f"\n{'ID':<5} {'Title':<28} {'Status':<10} {'Assigned To':<16} {'Due'}")
     print("-" * 75)
     for r in rows:
-        assignee = r["assignee"] or "(unassigned)"
+        assignee = r["assignees"] or "(unassigned)"
         due      = r["due_date"] or "—"
         print(f"{r['id']:<5} {r['title']:<28} {r['status']:<10} {assignee:<16} {due}")
 
@@ -196,10 +255,8 @@ def cmd_show_chore(args) -> None:
 
     require_membership(session["user_id"], chore["household_id"])
 
-    assignee = "(unassigned)"
-    if chore["assigned_to"]:
-        u = query_one("SELECT display_name AS username FROM users WHERE id = ?", (chore["assigned_to"],))
-        assignee = u["username"] if u else "unknown"
+    assignees = _get_chore_assignees(args.chore)
+    assignee = ", ".join(assignees) if assignees else "(unassigned)"
 
     creator = query_one("SELECT display_name AS username FROM users WHERE id = ?", (chore["created_by"],))
 
@@ -226,6 +283,45 @@ def cmd_show_chore(args) -> None:
             status = "resolved" if c["resolved"] else "open"
             print(f"  [{status}] {c['submitter']}: {c['description']}")
 
+def cmd_reschedule_chore(args) -> None:
+    session = require_session()
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (args.chore,))
+    if not chore:
+        print(f"Error: chore {args.chore} not found.")
+        return
+
+    require_admin(session["user_id"], chore["household_id"])
+
+    due_date = args.due
+    if due_date is None:
+        due_date = input("New due date (YYYY-MM-DD): ").strip()
+
+    try:
+        parsed_date = datetime.strptime(due_date, "%Y-%m-%d").date()
+    except ValueError:
+        print("Error: due date must be in YYYY-MM-DD format.")
+        return
+
+    if parsed_date < datetime.now(timezone.utc).date():
+        print("Error: due date cannot be in the past.")
+        return
+
+    execute(
+        "UPDATE chores SET due_date = ? WHERE id = ?",
+        (due_date, args.chore)
+    )
+
+    record(
+        chore["household_id"],
+        session["user_id"],
+        "chore.reschedule",
+        {"chore_id": args.chore, "due_date": due_date}
+    )
+
+    print(f"Chore {args.chore} due date updated to {due_date}.")
+
+
 
 # ---------------------------------------------------------------------------
 # Subparser registration
@@ -241,7 +337,7 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--title",       default=None)
     c.add_argument("--description", default="")
     c.add_argument("--due",         default=None, metavar="YYYY-MM-DD")
-    c.add_argument("--assign",      default=None, metavar="USERNAME")
+    c.add_argument("--assign", action="append", default=[], metavar="USERNAME")
     c.set_defaults(func=cmd_create_chore)
 
     # assign
@@ -249,6 +345,13 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--chore",    type=int, required=True, metavar="CHORE_ID")
     c.add_argument("--username", required=True)
     c.set_defaults(func=cmd_assign_chore)
+    
+
+    c = sub.add_parser("reschedule", help="Update a chore due date (admin only)")
+    c.add_argument("--chore", type=int, required=True, metavar="CHORE_ID")
+    c.add_argument("--due", required=True, metavar="YYYY-MM-DD")
+    c.set_defaults(func=cmd_reschedule_chore)
+
 
     # list
     c = sub.add_parser("list", help="List chores in a household")

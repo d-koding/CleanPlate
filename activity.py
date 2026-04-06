@@ -195,8 +195,13 @@ def cmd_complete(args) -> None:
         print("Chore is already marked complete.")
         return
 
+    is_assigned = query_one(
+        "SELECT 1 FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+        (args.chore, session["user_id"]),
+    )
+
     # Authorization: roommates may only complete their own assigned chores
-    if membership["role"] != "admin" and chore["assigned_to"] != session["user_id"]:
+    if membership["role"] != "admin" and not is_assigned:
         print("Error: you can only complete chores assigned to you.")
         return
 
@@ -213,6 +218,55 @@ def cmd_complete(args) -> None:
            f"{session['username']} marked '{chore['title']}' as complete.",
            exclude_user_id=session["user_id"])
     print(f"Chore '{chore['title']}' marked as complete.")
+
+
+def cmd_incomplete(args) -> None:
+    """
+    Mark a chore as incomplete.
+    Roommates can only mark assigned chores incomplete.
+    Admins can mark any chore in their household incomplete.
+    Usage: python main.py activity incomplete --chore <id>
+    """
+    session = require_session()
+
+    chore = query_one("SELECT * FROM chores WHERE id = ?", (args.chore,))
+    if not chore:
+        print(f"Error: chore {args.chore} not found.")
+        return
+
+    membership = require_membership(session["user_id"], chore["household_id"])
+
+    if chore["status"] == "pending":
+        print("Chore is already marked incomplete.")
+        return
+
+    is_assigned = query_one(
+        "SELECT 1 FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+        (args.chore, session["user_id"]),
+    )
+
+    if membership["role"] != "admin" and not is_assigned:
+        print("Error: you can only mark chores assigned to you as incomplete.")
+        return
+
+    execute(
+        "UPDATE chores SET status = 'pending', completed_at = NULL WHERE id = ?",
+        (args.chore,),
+    )
+
+    record(
+        chore["household_id"],
+        session["user_id"],
+        "chore.incomplete",
+        {"chore_id": args.chore, "title": chore["title"]},
+    )
+
+    notify(
+        chore["household_id"],
+        f"{session['username']} marked '{chore['title']}' as incomplete.",
+        exclude_user_id=session["user_id"],
+    )
+    print(f"Chore '{chore['title']}' marked as incomplete.")
 
 
 def cmd_dispute(args) -> None:
@@ -384,6 +438,11 @@ def register_subparsers(subparsers) -> None:
     c = sub.add_parser("complete", help="Mark a chore as complete")
     c.add_argument("--chore", type=int, required=True, metavar="CHORE_ID")
     c.set_defaults(func=cmd_complete)
+
+    # incomplete
+    c = sub.add_parser("incomplete", help="Mark a chore as incomplete")
+    c.add_argument("--chore", type=int, required=True, metavar="CHORE_ID")
+    c.set_defaults(func=cmd_incomplete)
 
     # dispute
     c = sub.add_parser("dispute", help="Dispute a completed chore")

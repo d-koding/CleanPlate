@@ -172,7 +172,7 @@ def cmd_create_chore(args) -> None:
             "title": title,
             "description": args.description,
             "due": args.due,
-            "assign": args.assign,
+            "assign": args.assign or [],
         },
     )
 
@@ -206,6 +206,11 @@ def cmd_complete(args) -> None:
     _remote_command("activity.complete", {"chore": chore_id})
 
 
+def cmd_incomplete(args) -> None:
+    chore_id = _arg(args, "chore", "chore_pos")
+    _remote_command("activity.incomplete", {"chore": chore_id})
+
+
 def cmd_dispute(args) -> None:
     chore_id = _arg(args, "chore", "chore_pos")
     reason = args.reason or input("Reason for dispute: ").strip()
@@ -228,6 +233,14 @@ def cmd_audit(args) -> None:
 
 def cmd_poll(args) -> None:
     _remote_command("activity.poll", {})
+
+
+def cmd_reschedule_chore(args) -> None:
+    chore_id = _arg(args, "chore", "chore_pos")
+    _remote_command(
+        "chore.reschedule",
+        {"chore": chore_id, "due": args.due},
+    )
 
 
 def register_subparsers(subparsers) -> None:
@@ -307,7 +320,7 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--title", dest="title", default=None)
     c.add_argument("--description", default="")
     c.add_argument("--due", default=None, metavar="YYYY-MM-DD")
-    c.add_argument("--assign", default=None, metavar="USERNAME")
+    c.add_argument("--assign", action="append", default=[], metavar="USERNAME")
     c.set_defaults(household=None, title=None)
     c.set_defaults(func=cmd_create_chore)
 
@@ -328,6 +341,13 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(household=None)
     c.set_defaults(func=cmd_list_chores)
 
+    c = sub.add_parser("reschedule", help="Update a chore due date (admin only)")
+    c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")
+    c.add_argument("--chore", dest="chore", type=int, default=None, metavar="CHORE_ID")
+    c.add_argument("--due", required=True, metavar="YYYY-MM-DD")
+    c.set_defaults(chore=None)
+    c.set_defaults(func=cmd_reschedule_chore)
+
     c = sub.add_parser("show", help="Show full details of a chore")
     c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")
     c.add_argument("--chore", dest="chore", type=int, default=None, metavar="CHORE_ID")
@@ -342,6 +362,12 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--chore", dest="chore", type=int, default=None, metavar="CHORE_ID")
     c.set_defaults(chore=None)
     c.set_defaults(func=cmd_complete)
+
+    c = sub.add_parser("incomplete", help="Mark a chore as incomplete")
+    c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")
+    c.add_argument("--chore", dest="chore", type=int, default=None, metavar="CHORE_ID")
+    c.set_defaults(chore=None)
+    c.set_defaults(func=cmd_incomplete)
 
     c = sub.add_parser("dispute", help="Dispute a completed chore")
     c.add_argument("chore_pos", nargs="?", type=int, metavar="CHORE_ID")
@@ -380,12 +406,16 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("title", nargs="?", help="Chore title")
     p.add_argument("--description", default="")
     p.add_argument("--due", default=None, metavar="YYYY-MM-DD")
-    p.add_argument("--assign", default=None, metavar="USERNAME")
+    p.add_argument("--assign", action="append", default=[], metavar="USERNAME")
     p.set_defaults(func=cmd_create_chore)
 
     p = subparsers.add_parser("complete", help="Complete a chore with a flat command")
     p.add_argument("chore", type=int, metavar="CHORE_ID")
     p.set_defaults(func=cmd_complete)
+
+    p = subparsers.add_parser("incomplete", help="Mark a chore incomplete with a flat command")
+    p.add_argument("chore", type=int, metavar="CHORE_ID")
+    p.set_defaults(func=cmd_incomplete)
 
     p = subparsers.add_parser("audit", help="Audit a household with a flat command")
     p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
