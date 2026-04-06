@@ -56,6 +56,7 @@ activity = importlib.import_module("activity")
 chores = importlib.import_module("chores")
 main = importlib.import_module("main")
 api_server = importlib.import_module("api_server")
+client_cli = importlib.import_module("client_cli")
 
 
 # ---------------------------------------------------------------------------
@@ -1084,122 +1085,6 @@ class TestActivity(cleanplateTestCase):
 # ---------------------------------------------------------------------------
 
 class TestMainParser(cleanplateTestCase):
-    def test_build_parser_parses_auth_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["login", "--username", "alice"])
-
-        self.assertEqual(args.command, "login")
-        self.assertEqual(args.username, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_login_with_positional_username(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["login", "alice"])
-
-        self.assertEqual(args.command, "login")
-        self.assertEqual(args.username_pos, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_signup_alias(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["signup", "alice"])
-
-        self.assertEqual(args.command, "signup")
-        self.assertEqual(args.username_pos, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_reset_password_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["reset-password", "--username", "alice"])
-
-        self.assertEqual(args.command, "reset-password")
-        self.assertEqual(args.username, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_forgot_password_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["forgot-password", "alice"])
-
-        self.assertEqual(args.command, "forgot-password")
-        self.assertEqual(args.username_pos, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_recover_password_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["recover-password", "alice", "abc123"])
-
-        self.assertEqual(args.command, "recover-password")
-        self.assertEqual(args.username_pos, "alice")
-        self.assertEqual(args.token_pos, "abc123")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_passwd_alias(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["passwd", "alice"])
-
-        self.assertEqual(args.command, "passwd")
-        self.assertEqual(args.username_pos, "alice")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_nested_household_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["household", "create", "--name", "Demo"])
-
-        self.assertEqual(args.command, "household")
-        self.assertEqual(args.household_cmd, "create")
-        self.assertEqual(args.name, "Demo")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_house_alias_and_positional_name(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["house", "create", "Demo"])
-
-        self.assertEqual(args.command, "house")
-        self.assertEqual(args.household_cmd, "create")
-        self.assertEqual(args.name_pos, "Demo")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_flat_create_household_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["create-household", "Demo"])
-
-        self.assertEqual(args.command, "create-household")
-        self.assertEqual(args.name, "Demo")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_flat_create_chore_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["create-chore", "3", "Take out trash"])
-
-        self.assertEqual(args.command, "create-chore")
-        self.assertEqual(args.household, 3)
-        self.assertEqual(args.title, "Take out trash")
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_nested_activity_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["activity", "complete", "--chore", "4"])
-
-        self.assertEqual(args.command, "activity")
-        self.assertEqual(args.activity_cmd, "complete")
-        self.assertEqual(args.chore, 4)
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_flat_complete_command(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["complete", "4"])
-
-        self.assertEqual(args.command, "complete")
-        self.assertEqual(args.chore, 4)
-        self.assertTrue(callable(args.func))
-
-    def test_build_parser_parses_me_alias(self):
-        parser = main.build_parser()
-        args = parser.parse_args(["me"])
-
-        self.assertEqual(args.command, "me")
-        self.assertTrue(callable(args.func))
-
     def test_build_parser_parses_interactive_command(self):
         parser = main.build_parser()
         args = parser.parse_args(["interactive"])
@@ -1207,21 +1092,95 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.command, "interactive")
         self.assertTrue(callable(args.func))
 
-    def test_build_parser_parses_shell_alias(self):
+    def test_build_parser_parses_serve_command(self):
         parser = main.build_parser()
-        args = parser.parse_args(["shell"])
+        args = parser.parse_args(["serve", "--port", "9000"])
 
-        self.assertEqual(args.command, "shell")
+        self.assertEqual(args.command, "serve")
+        self.assertEqual(args.port, 9000)
         self.assertTrue(callable(args.func))
+
+    def test_build_parser_rejects_direct_client_command(self):
+        parser = main.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["login", "--username", "alice"])
+
+    def test_build_command_parser_parses_auth_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["login", "--username", "alice"])
+
+        self.assertEqual(args.command, "login")
+        self.assertEqual(args.username, "alice")
+        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_parses_reset_password_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["reset-password", "--username", "alice"])
+
+        self.assertEqual(args.command, "reset-password")
+        self.assertEqual(args.username, "alice")
+        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_parses_nested_household_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["household", "create", "--name", "Demo"])
+
+        self.assertEqual(args.command, "household")
+        self.assertEqual(args.household_cmd, "create")
+        self.assertEqual(args.name, "Demo")
+        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_parses_nested_activity_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["activity", "complete", "--chore", "4"])
+
+        self.assertEqual(args.command, "activity")
+        self.assertEqual(args.activity_cmd, "complete")
+        self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_parses_reschedule_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["chore", "reschedule", "--chore", "7", "--due", "2026-04-10"])
+
+        self.assertEqual(args.command, "chore")
+        self.assertEqual(args.chore_cmd, "reschedule")
+        self.assertEqual(args.chore, 7)
+        self.assertEqual(args.due, "2026-04-10")
+        self.assertTrue(callable(args.func))
+
+    def test_normalize_interactive_argv_supports_login_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["login", "alice"]),
+            ["login", "--username", "alice"],
+        )
+
+    def test_normalize_interactive_argv_supports_household_create_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["household", "create", "Demo"]),
+            ["household", "create", "--name", "Demo"],
+        )
+
+    def test_normalize_interactive_argv_supports_activity_complete_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["activity", "complete", "4"]),
+            ["activity", "complete", "--chore", "4"],
+        )
+
+    def test_normalize_interactive_argv_supports_create_chore_phrase(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["create", "chore", "Take out trash"]),
+            ["chore", "create", "--title", "Take out trash"],
+        )
 
 
 class TestInteractiveShell(cleanplateTestCase):
     def test_interactive_shell_dispatches_commands_until_exit(self):
-        parser = main.build_parser()
+        parser = main.build_command_parser()
         called = []
 
         def fake_login(args):
-            called.append(("login", args.username_pos))
+            called.append(("login", args.username))
 
         parser._subparsers._group_actions[0].choices["login"].set_defaults(func=fake_login)
 
@@ -1232,7 +1191,7 @@ class TestInteractiveShell(cleanplateTestCase):
         self.assertEqual(called, [("login", "alice")])
 
     def test_interactive_shell_shows_parser_help(self):
-        parser = main.build_parser()
+        parser = main.build_command_parser()
 
         with patch("builtins.input", side_effect=["help", "exit"]):
             out = self.capture_output(main._run_interactive_shell, parser)
@@ -1240,13 +1199,47 @@ class TestInteractiveShell(cleanplateTestCase):
         self.assertIn("usage: cleanplate", out)
 
     def test_interactive_shell_handles_parse_error_and_continues(self):
-        parser = main.build_parser()
+        parser = main.build_command_parser()
 
         with patch("builtins.input", side_effect=["not-a-command", "exit"]):
             out = self.capture_output(main._run_interactive_shell, parser)
 
         self.assertIn("invalid choice", out)
         self.assertIn("Interactive CleanPlate shell", out)
+
+    def test_cmd_create_chore_prompts_for_missing_complex_fields(self):
+        payloads = []
+
+        def fake_remote(action, payload):
+            payloads.append((action, payload))
+
+        args = Namespace(
+            household=None,
+            title="Take out trash",
+            description=None,
+            due=None,
+            assign=None,
+        )
+
+        with patch("builtins.input", side_effect=["1", "", "", ""]), patch(
+            "client_cli._remote_command",
+            side_effect=fake_remote,
+        ):
+            client_cli.cmd_create_chore(args)
+
+        self.assertEqual(
+            payloads,
+            [(
+                "chore.create",
+                {
+                    "household": 1,
+                    "title": "Take out trash",
+                    "description": "",
+                    "due": None,
+                    "assign": [],
+                },
+            )],
+        )
 
 
 class TestClientServerArchitecture(cleanplateTestCase):

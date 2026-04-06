@@ -3,4 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-exec python3 "$SCRIPT_DIR/main.py" "$@"
+if [[ $# -gt 0 ]]; then
+  echo "cleanplate starts an interactive session only." >&2
+  echo "Run ./cleanplate with no arguments, then enter commands at the prompt." >&2
+  echo "To start the API server, run: python3 main.py serve" >&2
+  exit 2
+fi
+
+exec python3 "$SCRIPT_DIR/main.py"
