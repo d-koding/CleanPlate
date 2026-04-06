@@ -294,20 +294,46 @@ def cmd_send_invite(args) -> None:
     print(f"Invite email sent to {email}.")
 
 
+def _resolve_household_id(session: dict, given_id: int | None) -> int | None:
+    """
+    Return the household ID to use for a command.
+    If given_id is provided, use it.
+    If the user is in exactly one household, use that.
+    Otherwise print an error and return None.
+    """
+    if given_id is not None:
+        return given_id
+    rows = query(
+        "SELECT household_id FROM members WHERE user_id = ?",
+        (session["user_id"],)
+    )
+    if not rows:
+        print("Error: you are not a member of any household.")
+        return None
+    if len(rows) > 1:
+        print("Error: you belong to multiple households — specify one with --id <household_id>.")
+        return None
+    return rows[0]["household_id"]
+
+
 def cmd_promote_member(args) -> None:
     """
     Promote a roommate to admin (admin only).
     Usage: python main.py household promote --id <HID> --username <username>
+           python main.py promote <username>   (when in exactly one household)
     """
     session = require_session()
-    require_admin(session["user_id"], args.id)
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
 
     target = _find_user_by_username(args.username)
     if not target:
         print(f"Error: user '{args.username}' not found.")
         return
 
-    m = get_membership(target["id"], args.id)
+    m = get_membership(target["id"], household_id)
     if not m:
         print(f"Error: '{args.username}' is not in this household.")
         return
@@ -318,22 +344,26 @@ def cmd_promote_member(args) -> None:
 
     execute(
         "UPDATE members SET role = 'admin' WHERE user_id = ? AND household_id = ?",
-        (target["id"], args.id)
+        (target["id"], household_id)
     )
 
     from activity import record
-    record(args.id, session["user_id"], "membership.promote", {"username": args.username})
+    record(household_id, session["user_id"], "membership.promote", {"username": args.username})
 
-    print(f"'{args.username}' promoted to admin in household {args.id}.")
+    print(f"'{args.username}' promoted to admin.")
 
 
 def cmd_demote_member(args) -> None:
     """
     Demote an admin to roommate (admin only). Cannot demote yourself.
     Usage: python main.py household demote --id <HID> --username <username>
+           python main.py demote <username>   (when in exactly one household)
     """
     session = require_session()
-    require_admin(session["user_id"], args.id)
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
 
     self_row = query_one("SELECT display_name FROM users WHERE id = ?", (session["user_id"],))
     if args.username == self_row["display_name"]:
@@ -345,7 +375,7 @@ def cmd_demote_member(args) -> None:
         print(f"Error: user '{args.username}' not found.")
         return
 
-    m = get_membership(target["id"], args.id)
+    m = get_membership(target["id"], household_id)
     if not m:
         print(f"Error: '{args.username}' is not in this household.")
         return
@@ -356,13 +386,13 @@ def cmd_demote_member(args) -> None:
 
     execute(
         "UPDATE members SET role = 'roommate' WHERE user_id = ? AND household_id = ?",
-        (target["id"], args.id)
+        (target["id"], household_id)
     )
 
     from activity import record
-    record(args.id, session["user_id"], "membership.demote", {"username": args.username})
+    record(household_id, session["user_id"], "membership.demote", {"username": args.username})
 
-    print(f"'{args.username}' demoted to roommate in household {args.id}.")
+    print(f"'{args.username}' demoted to roommate.")
 
 
 def cmd_list_households(args) -> None:

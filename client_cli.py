@@ -508,3 +508,44 @@ def register_subparsers(subparsers) -> None:
 
     c = sub.add_parser("poll", help="View unread notifications")
     c.set_defaults(func=cmd_poll)
+
+    p = subparsers.add_parser("create-household", help="Create a household with a flat command")
+    p.add_argument("name", nargs="?", help="Household name")
+    p.set_defaults(func=cmd_create_household)
+
+    p = subparsers.add_parser("join-household", help="Join a household with a flat command")
+    p.add_argument("code", nargs="?", help="Invite code")
+    p.set_defaults(func=cmd_join_household)
+
+    p = subparsers.add_parser("promote", help="Promote a roommate to admin")
+    p.add_argument("username", metavar="USERNAME")
+    p.set_defaults(id=None, func=cmd_promote_member)
+
+    p = subparsers.add_parser("demote", help="Demote an admin to roommate")
+    p.add_argument("username", metavar="USERNAME")
+    p.set_defaults(id=None, func=cmd_demote_member)
+
+    p = subparsers.add_parser("invite", aliases=["send-invite"], help="Email the invite code to a recipient (email or username)")
+    p.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
+    p.set_defaults(id=None, email=None)
+    p.set_defaults(func=cmd_send_invite)
+
+    p = subparsers.add_parser("create-chore", help="Create a chore with a flat command")
+    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.add_argument("title", nargs="?", help="Chore title")
+    p.add_argument("--description", default="")
+    p.add_argument("--due", default=None, metavar="YYYY-MM-DD")
+    p.add_argument("--assign", action="append", default=[], metavar="USERNAME")
+    p.set_defaults(func=cmd_create_chore)
+
+    p = subparsers.add_parser("complete", help="Complete a chore with a flat command")
+    p.add_argument("chore", type=int, metavar="CHORE_ID")
+    p.set_defaults(func=cmd_complete)
+
+    p = subparsers.add_parser("incomplete", help="Mark a chore incomplete with a flat command")
+    p.add_argument("chore", type=int, metavar="CHORE_ID")
+    p.set_defaults(func=cmd_incomplete)
+
+    p = subparsers.add_parser("audit", help="Audit a household with a flat command")
+    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.set_defaults(func=cmd_audit)
