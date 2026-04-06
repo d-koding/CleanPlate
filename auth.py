@@ -284,7 +284,7 @@ def cmd_register(args) -> None:
 
 def cmd_login(args) -> None:
     """
-    Log in to CleanPlate. Saves session to ~/.cleanplate_session.
+    Log in to CleanPlate. Saves a terminal-scoped session locally.
     Usage: python main.py login --username alice
     """
     username = args.username

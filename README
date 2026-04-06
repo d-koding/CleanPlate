@@ -60,6 +60,9 @@ You can still run single commands directly from your shell when needed:
 
 By default the client connects to http://127.0.0.1:8000.
 To use a different server, set CLEANPLATE_SERVER_URL.
+Client logins are terminal-scoped by default, so different terminals can stay
+logged in as different users concurrently. You can also override the local
+session file with CLEANPLATE_SESSION_NAME or CLEANPLATE_SESSION_PATH.
 
 
 FULL COMMAND REFERENCE
@@ -198,7 +201,8 @@ SECURITY NOTES
 
   Audit log : HMAC-SHA256 chained; verify_chain() detects any tampering.
   HMAC key  : Stored in DB for prototype; move to env var for alpha.
-  Session   : ~/.cleanplate_session (chmod 600); cleared on logout.
+  Session   : terminal-scoped ~/.cleanplate_session_<terminal> by default
+              (chmod 600); cleared on logout.
   Auth      : Role check on every sensitive command, not just at login.
 
 MULTI-HOUSEHOLD SUPPORT

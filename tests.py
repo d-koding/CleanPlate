@@ -142,6 +142,19 @@ class TestSessionModule(cleanplateTestCase):
         self.assertEqual(loaded["user_id"], 3)
         self.assertEqual(loaded["username"], "bob")
 
+    def test_session_name_env_var_creates_isolated_paths(self):
+        session.SESSION_PATH = None
+        with patch.dict(os.environ, {"CLEANPLATE_SESSION_NAME": "terminal-a"}, clear=False):
+            path_a = session.get_session_path()
+        with patch.dict(os.environ, {"CLEANPLATE_SESSION_NAME": "terminal-b"}, clear=False):
+            path_b = session.get_session_path()
+
+        self.assertNotEqual(path_a, path_b)
+        self.assertTrue(path_a.endswith(".cleanplate_session_terminal-a"))
+        self.assertTrue(path_b.endswith(".cleanplate_session_terminal-b"))
+
+        session.SESSION_PATH = self.session_path
+
 
 # ---------------------------------------------------------------------------
 # DB tests

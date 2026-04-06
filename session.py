@@ -10,8 +10,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import os
+import re
+import sys
 
-SESSION_PATH = os.path.join(os.path.expanduser("~"), ".cleanplate_session")
+SESSION_PATH: str | None = None
 _MISSING = object()
 _SESSION_OVERRIDE: ContextVar[object] = ContextVar("cleanplate_session_override", default=_MISSING)
 
@@ -31,15 +33,59 @@ def session_scope(session_data: dict | None):
         _SESSION_OVERRIDE.reset(token)
 
 
+def _slugify_terminal_name(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+    return slug or "default"
+
+
+def get_session_path() -> str:
+    """
+    Resolve the local session file path.
+
+    Priority:
+      1. Explicit SESSION_PATH override (used by tests)
+      2. CLEANPLATE_SESSION_PATH env var
+      3. CLEANPLATE_SESSION_NAME env var
+      4. Current terminal device name, when available
+      5. Legacy shared ~/.cleanplate_session fallback
+    """
+    if SESSION_PATH:
+        return SESSION_PATH
+
+    explicit_path = os.environ.get("CLEANPLATE_SESSION_PATH")
+    if explicit_path:
+        return os.path.expanduser(explicit_path)
+
+    session_name = os.environ.get("CLEANPLATE_SESSION_NAME")
+    if session_name:
+        slug = _slugify_terminal_name(session_name)
+        return os.path.join(os.path.expanduser("~"), f".cleanplate_session_{slug}")
+
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            if stream is None:
+                continue
+            fd = stream.fileno()
+            if os.isatty(fd):
+                tty_name = os.ttyname(fd)
+                slug = _slugify_terminal_name(os.path.basename(tty_name))
+                return os.path.join(os.path.expanduser("~"), f".cleanplate_session_{slug}")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+    return os.path.join(os.path.expanduser("~"), ".cleanplate_session")
+
+
 def save_session(user_id: int, username: str) -> None:
     override = _SESSION_OVERRIDE.get()
     if override is not _MISSING:
         _SESSION_OVERRIDE.set({"user_id": user_id, "username": username})
         return
+    path = get_session_path()
     try:
-        with open(SESSION_PATH, "w") as f:
+        with open(path, "w") as f:
             json.dump({"user_id": user_id, "username": username}, f)
-        os.chmod(SESSION_PATH, 0o600)   # readable only by the owning OS user
+        os.chmod(path, 0o600)   # readable only by the owning OS user
     except OSError as e:
         print(f"Error: could not save session ({e}).")
         raise SystemExit(1)
@@ -49,10 +95,11 @@ def load_session() -> dict | None:
     override = _SESSION_OVERRIDE.get()
     if override is not _MISSING:
         return override
-    if not os.path.exists(SESSION_PATH):
+    path = get_session_path()
+    if not os.path.exists(path):
         return None
     try:
-        with open(SESSION_PATH) as f:
+        with open(path) as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
@@ -63,8 +110,9 @@ def clear_session() -> None:
     if override is not _MISSING:
         _SESSION_OVERRIDE.set(None)
         return
+    path = get_session_path()
     try:
-        os.remove(SESSION_PATH)
+        os.remove(path)
     except FileNotFoundError:
         pass
 
