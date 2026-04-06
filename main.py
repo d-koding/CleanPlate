@@ -14,7 +14,7 @@ import client_cli
 def _interactive_help() -> None:
     print("Interactive CleanPlate shell")
     print("Type a command like: login alice")
-    print("Type 'help' to show CLI help, or 'exit' to quit.")
+    print("Type 'help' to show CLI help, or 'exit'/'quit'/'q' to quit.")
 
 
 def _run_interactive_shell(parser: argparse.ArgumentParser) -> None:
@@ -32,7 +32,7 @@ def _run_interactive_shell(parser: argparse.ArgumentParser) -> None:
 
         if not line:
             continue
-        if line.lower() in {"exit", "quit"}:
+        if line.lower() in {"exit", "quit", "q"}:
             break
         if line.lower() == "help":
             parser.print_help()
