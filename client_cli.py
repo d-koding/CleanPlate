@@ -108,6 +108,7 @@ def cmd_register(args) -> None:
             "register",
             {
                 "username": username,
+                "email": email,
                 "password": password,
                 "confirm_password": confirm_password,
             },
@@ -135,6 +136,26 @@ def cmd_login(args) -> None:
         print(exc)
         raise SystemExit(1)
     _handle_response(response, persist_session=True)
+
+
+def cmd_verify_email(args) -> None:
+    code = (_arg(args, "code", "code_pos") or input("Verification code: ").strip()).strip()
+    try:
+        response = invoke("verify", {"code": code}, None)
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
+
+
+def cmd_resend_verification(args) -> None:
+    username = (_arg(args, "username", "username_pos") or input("Username or email: ").strip()).strip()
+    try:
+        response = invoke("resend-verification", {"username": username}, None)
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
 
 
 def cmd_reset_password(args) -> None:
@@ -270,7 +291,7 @@ def cmd_demote_member(args) -> None:
 
 def cmd_send_invite(args) -> None:
     household_id = _arg(args, "id", "id_pos")
-    email = _arg(args, "email") or input("Recipient email: ").strip()
+    email = _arg(args, "email", "email_pos") or input("Recipient (email or username): ").strip()
     _remote_command("household.send-invite", {"id": household_id, "email": email})
 
 
@@ -392,6 +413,17 @@ def register_subparsers(subparsers) -> None:
     p.set_defaults(username=None, token=None)
     p.set_defaults(func=cmd_recover_password)
 
+    p = subparsers.add_parser("verify", help="Verify your email address with the code that was emailed")
+    p.add_argument("code_pos", nargs="?", help="Verification code")
+    p.add_argument("--code", dest="code", default=None)
+    p.set_defaults(func=cmd_verify_email)
+
+    p = subparsers.add_parser("resend-verification", help="Resend email verification code")
+    p.add_argument("username_pos", nargs="?", help="Your username or email")
+    p.add_argument("--username", dest="username", default=None)
+    p.set_defaults(username=None)
+    p.set_defaults(func=cmd_resend_verification)
+
     p = subparsers.add_parser("logout", help="Log out locally")
     p.set_defaults(func=cmd_logout)
 
@@ -442,9 +474,9 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(func=cmd_demote_member)
 
     c = sub.add_parser("send-invite", help="Email the invite code to a recipient (admin only)")
-    c.add_argument("id_pos", nargs="?", type=int, metavar="HOUSEHOLD_ID")
+    c.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
     c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
-    c.add_argument("--email", dest="email", default=None)
+    c.add_argument("--email", dest="email", default=None, metavar="EMAIL_OR_USERNAME")
     c.set_defaults(id=None, email=None)
     c.set_defaults(func=cmd_send_invite)
 

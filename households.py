@@ -12,13 +12,10 @@ Responsibilities:
 Standard library only: secrets
 """
 
-import os
 import secrets
-import smtplib
 import sqlite3
-from email.mime.text import MIMEText
 
-from auth import _find_user_by_username
+from auth import _find_user_by_username, _send_email
 from db import execute, query, query_one
 from session import require_session
 
@@ -222,51 +219,42 @@ def cmd_remove_member(args) -> None:
     print(f"'{args.username}' removed from household {args.id}.")
 
 
-def _send_invite_email(recipient: str, subject: str, body: str) -> None:
-    """
-    Send an email via SMTP. Reads config from environment variables:
-      CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_PORT (default 587),
-      CLEANPLATE_SMTP_USER, CLEANPLATE_SMTP_PASS
-    """
-    host = os.environ.get("CLEANPLATE_SMTP_HOST", "")
-    port = int(os.environ.get("CLEANPLATE_SMTP_PORT", "587"))
-    user = os.environ.get("CLEANPLATE_SMTP_USER", "")
-    password = os.environ.get("CLEANPLATE_SMTP_PASS", "")
-
-    if not host or not user:
-        raise ValueError(
-            "SMTP not configured. Set CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_USER, "
-            "and CLEANPLATE_SMTP_PASS environment variables."
-        )
-
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = user
-    msg["To"] = recipient
-
-    with smtplib.SMTP(host, port) as smtp:
-        smtp.starttls()
-        if password:
-            smtp.login(user, password)
-        smtp.send_message(msg)
-
-
 def cmd_send_invite(args) -> None:
     """
     Email the household invite code to a recipient (admin only).
-    Usage: python main.py household send-invite --id <HID> --email <email>
+    Accepts an email address or a username (looks up their registered email).
+    Usage: python main.py household send-invite --id <HID> --email <email|username>
+           python main.py invite bob@example.com
+           python main.py invite bob
     Requires env vars: CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_PORT,
                        CLEANPLATE_SMTP_USER, CLEANPLATE_SMTP_PASS
     """
     session = require_session()
-    require_admin(session["user_id"], args.id)
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
 
-    email = args.email or input("Recipient email: ").strip()
-    if not email:
-        print("Error: email cannot be empty.")
+    recipient = getattr(args, "email", None) or input("Recipient (email or username): ").strip()
+    if not recipient:
+        print("Error: recipient cannot be empty.")
         return
 
-    row = query_one("SELECT * FROM households WHERE id = ?", (args.id,))
+    # If not an email address, look up the user's registered email
+    if "@" not in recipient:
+        target = _find_user_by_username(recipient)
+        if not target:
+            print(f"Error: user '{recipient}' not found.")
+            return
+        user_row = query_one("SELECT email FROM users WHERE id = ?", (target["id"],))
+        if not user_row or not user_row["email"]:
+            print(f"Error: '{recipient}' has no email address on file.")
+            return
+        email = user_row["email"]
+    else:
+        email = recipient.strip().lower()
+
+    row = query_one("SELECT * FROM households WHERE id = ?", (household_id,))
     if row is None:
         print("Error: household not found.")
         return
@@ -278,18 +266,18 @@ def cmd_send_invite(args) -> None:
         f"Use this invite code to join:\n\n"
         f"    {row['invite_code']}\n\n"
         f"Run this command to join:\n\n"
-        f"    python main.py household join --code {row['invite_code']}\n\n"
+        f"    join-household {row['invite_code']}\n\n"
         f"Welcome aboard!\n"
     )
 
     try:
-        _send_invite_email(email, subject, body)
+        _send_email(email, subject, body)
     except Exception as e:
         print(f"Error: could not send email: {e}")
         return
 
     from activity import record
-    record(args.id, session["user_id"], "invite.sent", {"email": email})
+    record(household_id, session["user_id"], "invite.sent", {"email": email})
 
     print(f"Invite email sent to {email}.")
 

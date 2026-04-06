@@ -25,6 +25,8 @@ from session import load_session, session_scope
 COMMANDS = {
     "register": auth.cmd_register,
     "login": auth.cmd_login,
+    "verify": auth.cmd_verify_email,
+    "resend-verification": auth.cmd_resend_verification,
     "reset-password": auth.cmd_reset_password,
     "forgot-password": auth.cmd_forgot_password,
     "recover-password": auth.cmd_recover_password,

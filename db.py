@@ -158,6 +158,15 @@ def init_db() -> None:
                 used       INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Email verification tokens ------------------------------------
+            CREATE TABLE IF NOT EXISTS email_verifications (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                code       TEXT    NOT NULL,
+                expires_at TEXT    NOT NULL,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         user_columns = {
@@ -165,6 +174,10 @@ def init_db() -> None:
         }
         if "display_name" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+        if "email" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        if "email_verified" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
 
         conn.execute(
             "UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''"
