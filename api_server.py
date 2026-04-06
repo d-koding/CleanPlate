@@ -26,6 +26,8 @@ COMMANDS = {
     "register": auth.cmd_register,
     "login": auth.cmd_login,
     "reset-password": auth.cmd_reset_password,
+    "forgot-password": auth.cmd_forgot_password,
+    "recover-password": auth.cmd_recover_password,
     "whoami": auth.cmd_whoami,
     "logout": auth.cmd_logout,
     "household.create": households.cmd_create_household,
