@@ -185,6 +185,11 @@ def _check_password_strength(password: str) -> list[str]:
     if password.lower() in _DICTIONARY:
         errors.append("password is a dictionary word")
 
+    if not any(c.isupper() for c in password):
+        errors.append("at least one uppercase letter")
+    if not any(not c.isalnum() for c in password):
+        errors.append("at least one symbol (e.g. !@#$%)")
+
     if len(set(password)) < 3:
         errors.append("password is too repetitive")
     if _is_sequential(password):
