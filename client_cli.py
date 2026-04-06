@@ -106,6 +106,44 @@ def cmd_reset_password(args) -> None:
     _handle_response(response)
 
 
+def cmd_forgot_password(args) -> None:
+    username = (_arg(args, "username", "username_pos") or input("Username: ").strip()).strip()
+
+    try:
+        response = invoke(
+            "forgot-password",
+            {"username": username},
+            None,
+        )
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
+
+
+def cmd_recover_password(args) -> None:
+    username = (_arg(args, "username", "username_pos") or input("Username: ").strip()).strip()
+    token = (_arg(args, "token", "token_pos") or input("Reset token: ").strip()).strip()
+    new_password = getpass.getpass("New password (min 8 chars): ")
+    confirm_password = getpass.getpass("Confirm new password: ")
+
+    try:
+        response = invoke(
+            "recover-password",
+            {
+                "username": username,
+                "token": token,
+                "new_password": new_password,
+                "confirm_password": confirm_password,
+            },
+            None,
+        )
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
+
+
 def cmd_logout(args) -> None:
     session = load_session()
     if session:
@@ -267,6 +305,26 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("--username", dest="username", default=None, help="Your username")
     p.set_defaults(username=None)
     p.set_defaults(func=cmd_reset_password)
+
+    p = subparsers.add_parser(
+        "forgot-password",
+        help=f"Request a reset token via server at {get_server_url()}",
+    )
+    p.add_argument("username_pos", nargs="?", help="Your username")
+    p.add_argument("--username", dest="username", default=None, help="Your username")
+    p.set_defaults(username=None)
+    p.set_defaults(func=cmd_forgot_password)
+
+    p = subparsers.add_parser(
+        "recover-password",
+        help=f"Reset your password with a recovery token via server at {get_server_url()}",
+    )
+    p.add_argument("username_pos", nargs="?", help="Your username")
+    p.add_argument("token_pos", nargs="?", help="One-time reset token")
+    p.add_argument("--username", dest="username", default=None, help="Your username")
+    p.add_argument("--token", dest="token", default=None, help="One-time reset token")
+    p.set_defaults(username=None, token=None)
+    p.set_defaults(func=cmd_recover_password)
 
     p = subparsers.add_parser("logout", help="Log out locally")
     p.set_defaults(func=cmd_logout)

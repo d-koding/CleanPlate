@@ -176,6 +176,7 @@ class TestDatabaseInitialization(cleanplateTestCase):
             "households",
             "members",
             "notifications",
+            "password_reset_tokens",
             "users",
         }
         self.assertTrue(expected.issubset(names))
@@ -368,6 +369,46 @@ class TestAuth(cleanplateTestCase):
             out = self.capture_output(auth.cmd_reset_password, Namespace(username="alice"))
 
         self.assertIn("must be different", out.lower())
+
+    def test_forgot_password_issues_token_and_recover_password_updates_hash(self):
+        self.create_user("alice", "GoodPass!123")
+
+        out = self.capture_output(auth.cmd_forgot_password, Namespace(username="alice"))
+        self.assertIn("Reset token:", out)
+        token = out.split("Reset token: ", 1)[1].splitlines()[0].strip()
+
+        original = auth._find_user_by_username("alice")["password_hash"]
+        out = self.capture_output(
+            auth.cmd_recover_password,
+            Namespace(
+                username="alice",
+                token=token,
+                new_password="EvenBetter!456",
+                confirm_password="EvenBetter!456",
+            ),
+        )
+
+        self.assertIn("Password recovered for 'alice'", out)
+        updated = auth._find_user_by_username("alice")["password_hash"]
+        self.assertNotEqual(original, updated)
+        self.assertTrue(auth._verify_password("EvenBetter!456", updated))
+        self.assertFalse(auth._verify_password("GoodPass!123", updated))
+
+    def test_recover_password_rejects_invalid_token(self):
+        self.create_user("alice", "GoodPass!123")
+        self.capture_output(auth.cmd_forgot_password, Namespace(username="alice"))
+
+        out = self.capture_output(
+            auth.cmd_recover_password,
+            Namespace(
+                username="alice",
+                token="definitely-wrong-token",
+                new_password="EvenBetter!456",
+                confirm_password="EvenBetter!456",
+            ),
+        )
+
+        self.assertIn("invalid username or reset token", out.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1116,23 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.username, "alice")
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_forgot_password_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["forgot-password", "alice"])
+
+        self.assertEqual(args.command, "forgot-password")
+        self.assertEqual(args.username_pos, "alice")
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_recover_password_command(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["recover-password", "alice", "abc123"])
+
+        self.assertEqual(args.command, "recover-password")
+        self.assertEqual(args.username_pos, "alice")
+        self.assertEqual(args.token_pos, "abc123")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_parses_passwd_alias(self):
         parser = main.build_parser()
         args = parser.parse_args(["passwd", "alice"])
@@ -1249,6 +1307,48 @@ class TestClientServerArchitecture(cleanplateTestCase):
         )
         self.assertTrue(reset["ok"])
         self.assertIn("Password updated", reset["output"])
+
+        _, login = api_server.invoke_command(
+            "login",
+            {"username": "alice", "password": "EvenBetter!456"},
+            None,
+        )
+        self.assertTrue(login["ok"])
+        self.assertEqual(login["session"]["username"], "alice")
+
+    def test_server_dispatch_supports_forgot_and_recover_password(self):
+        _, register = api_server.invoke_command(
+            "register",
+            {
+                "username": "alice",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+            },
+            None,
+        )
+        self.assertTrue(register["ok"])
+
+        _, forgot = api_server.invoke_command(
+            "forgot-password",
+            {"username": "alice"},
+            None,
+        )
+        self.assertTrue(forgot["ok"])
+        self.assertIn("Reset token:", forgot["output"])
+        token = forgot["output"].split("Reset token: ", 1)[1].splitlines()[0].strip()
+
+        _, recover = api_server.invoke_command(
+            "recover-password",
+            {
+                "username": "alice",
+                "token": token,
+                "new_password": "EvenBetter!456",
+                "confirm_password": "EvenBetter!456",
+            },
+            None,
+        )
+        self.assertTrue(recover["ok"])
+        self.assertIn("Password recovered", recover["output"])
 
         _, login = api_server.invoke_command(
             "login",

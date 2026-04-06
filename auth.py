@@ -28,6 +28,7 @@ import getpass
 import hashlib
 import hmac
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from db import execute, query, query_one
 from session import clear_session, load_session, save_session
@@ -72,6 +73,10 @@ def _username_hmac(username: str) -> str:
     key = _get_or_create_username_hmac_key()
     normalized = _normalize_username(username).encode("utf-8", errors="replace")
     return hmac.new(key, normalized, hashlib.sha256).hexdigest()
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _migrate_legacy_username(row) -> None:
@@ -394,6 +399,145 @@ def cmd_reset_password(args) -> None:
     print(f"Password updated for '{username}'.")
 
 
+def cmd_forgot_password(args) -> None:
+    """
+    Issue a one-time password reset token for a user account.
+    Usage: python main.py forgot-password --username alice
+    """
+    username = _validate_username(getattr(args, "username", None))
+    if username is None:
+        return
+
+    try:
+        row = _find_user_by_username(username)
+    except Exception:
+        print("Error: database unavailable.")
+        return
+
+    if row is None:
+        print("If that account exists, a password reset token has been issued.")
+        return
+
+    token = secrets.token_urlsafe(24)
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+
+    try:
+        execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0",
+            (row["id"],),
+        )
+        execute(
+            """INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+               VALUES (?, ?, ?)""",
+            (row["id"], _hash_reset_token(token), expires_at),
+        )
+    except Exception:
+        print("Error: could not create reset token. Please try again.")
+        return
+
+    print("If that account exists, a password reset token has been issued.")
+    print("Prototype mode: share this token directly with the user.")
+    print(f"Reset token: {token}")
+    print("This token expires in 15 minutes.")
+
+
+def cmd_recover_password(args) -> None:
+    """
+    Reset a user's password using a one-time recovery token.
+    Usage: python main.py recover-password --username alice --token <token>
+    """
+    username = _validate_username(getattr(args, "username", None))
+    if username is None:
+        return
+
+    token = getattr(args, "token", None)
+    if token is None:
+        token = input("Reset token: ").strip()
+    if not token:
+        print("Error: reset token cannot be empty.")
+        return
+
+    try:
+        row = _find_user_by_username(username)
+    except Exception:
+        print("Error: database unavailable.")
+        return
+
+    if row is None:
+        print("Error: invalid username or reset token.")
+        return
+
+    token_row = query_one(
+        """SELECT id, token_hash, expires_at
+           FROM password_reset_tokens
+           WHERE user_id = ? AND used = 0
+           ORDER BY id DESC""",
+        (row["id"],),
+    )
+    if token_row is None:
+        print("Error: invalid username or reset token.")
+        return
+
+    try:
+        expires_at = datetime.fromisoformat(token_row["expires_at"])
+    except ValueError:
+        print("Error: reset token is invalid. Request a new one.")
+        return
+
+    if expires_at <= datetime.now(timezone.utc):
+        execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (token_row["id"],))
+        print("Error: reset token has expired. Request a new one.")
+        return
+
+    if not hmac.compare_digest(token_row["token_hash"], _hash_reset_token(token)):
+        print("Error: invalid username or reset token.")
+        return
+
+    new_password = getattr(args, "new_password", None)
+    if new_password is None:
+        new_password = getpass.getpass("New password (min 8 chars): ")
+    if not new_password:
+        print("Error: new password cannot be empty.")
+        return
+
+    recipe_errors = _check_password_strength(new_password)
+    if recipe_errors:
+        print("Error: ")
+        for rule in recipe_errors:
+            print(f"  • {rule}")
+        return
+
+    if _verify_password(new_password, row["password_hash"]):
+        print("Error: new password must be different from the current password.")
+        return
+
+    confirm = getattr(args, "confirm_password", None)
+    if confirm is None:
+        confirm = getpass.getpass("Confirm new password: ")
+    if not confirm:
+        print("Error: new password confirmation cannot be empty.")
+        return
+
+    if new_password != confirm:
+        print("Error: passwords do not match.")
+        return
+
+    try:
+        execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (_hash_password(new_password), row["id"]),
+        )
+        execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0",
+            (row["id"],),
+        )
+    except Exception:
+        print("Error: could not update password. Please try again.")
+        return
+
+    print(f"Password recovered for '{username}'. You can now log in.")
+
+
 def cmd_logout(args) -> None:
     """
     Log out by removing the local session file.
@@ -457,6 +601,15 @@ def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("reset-password", help="Change your password")
     p.add_argument("--username", default=None, help="Your username")
     p.set_defaults(func=cmd_reset_password)
+
+    p = subparsers.add_parser("forgot-password", help="Request a one-time password reset token")
+    p.add_argument("--username", default=None, help="Your username")
+    p.set_defaults(func=cmd_forgot_password)
+
+    p = subparsers.add_parser("recover-password", help="Reset password using a one-time token")
+    p.add_argument("--username", default=None, help="Your username")
+    p.add_argument("--token", default=None, help="One-time reset token")
+    p.set_defaults(func=cmd_recover_password)
 
     p = subparsers.add_parser("logout", help="Log out")
     p.set_defaults(func=cmd_logout)
