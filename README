@@ -1,62 +1,66 @@
 CleanPlate — Secure Roommate Chore Coordinator
-================================================
+==============================================
 
 Standard library only. No pip install required.
-Requires Python 3.10+ (for the X | None type hint syntax).
+Requires Python 3.10+.
 
 Platform: Linux / macOS. Tested on Ubuntu 22.04.
-Run on the course VM: copy the folder, start the server, then run client commands.
+
+
+OVERVIEW
+--------
+
+CleanPlate now runs as an interactive client session.
+
+- Use `./cleanplate` to open the client shell.
+- Type the normal structured commands inside that shell.
+- Use `python3 main.py serve` to start the API server.
+
+The client no longer expects you to run app commands directly from your OS shell.
 
 
 QUICK START
 -----------
 
   # Terminal 1: start the server
-  ./cleanplate serve
+  python3 main.py serve
 
-  # Terminal 2: open the interactive shell
-  ./cleanplate interactive
-  cleanplate> signup alice
+  # Terminal 2: open the client shell
+  ./cleanplate
+
+  cleanplate> register alice
   cleanplate> login alice
-  cleanplate> create-household "42 Elm Street"
+  cleanplate> household create "42 Elm Street"
   cleanplate> household list
   cleanplate> exit
 
-If the script is executable, you can also put the repo on your `PATH` and run
-`cleanplate ...` directly.
 
-PRIMARY USAGE
--------------
+INTERACTIVE SHELL
+-----------------
 
-The intended way to use CleanPlate is as one continuous command session:
+Open the client shell with:
 
-  ./cleanplate interactive
+  ./cleanplate
 
-Inside the session, type regular commands without restarting the app each time:
+Inside the shell:
 
-  cleanplate> signup alice
+- Type `help` to see the available command tree.
+- Type `exit` or `quit` to leave the shell.
+- Use the same command structure each time; no wrapper aliases or flat shortcuts.
+
+Examples:
+
+  cleanplate> register alice
   cleanplate> login alice
-  cleanplate> me
-  cleanplate> create-household "Maple House"
-  cleanplate> create-chore 1 "Take out trash"
-  cleanplate> complete 4
+  cleanplate> whoami
+  cleanplate> create household "Maple House"
+  cleanplate> household create "Maple House"
+  cleanplate> household join aB3xQr_kLmN
+  cleanplate> create chore "Take out trash"
+  cleanplate> chore create 1 "Take out trash"
+  cleanplate> activity complete 4
   cleanplate> help
   cleanplate> exit
-
-`shell` and `repl` are aliases for `interactive`.
-
-ONE-SHOT MODE
--------------
-
-You can still run single commands directly from your shell when needed:
-
-`./cleanplate signup alice`
-`./cleanplate login alice`
-`./cleanplate passwd alice`
-`./cleanplate me`
-`./cleanplate create-household "Maple House"`
-`./cleanplate create-chore 1 "Take out trash"`
-`./cleanplate complete 4`
 
 By default the client connects to http://127.0.0.1:8000.
 To use a different server, set CLEANPLATE_SERVER_URL.
@@ -65,148 +69,150 @@ logged in as different users concurrently. You can also override the local
 session file with CLEANPLATE_SESSION_NAME or CLEANPLATE_SESSION_PATH.
 
 
-FULL COMMAND REFERENCE
-----------------------
+COMMAND REFERENCE
+-----------------
 
-These commands work both inside `./cleanplate interactive` and as direct shell commands.
+Run these inside the `cleanplate>` prompt.
 
--- Identity & Access (Person 1) --
-  ./cleanplate register   --username <name>
-  ./cleanplate signup     <name>
-  ./cleanplate login      --username <name>
-  ./cleanplate login      <name>
-  ./cleanplate reset-password --username <name>
-  ./cleanplate passwd     <name>
-  ./cleanplate logout
-  ./cleanplate whoami
-  ./cleanplate me
+Common interactive shorthand:
+  login alice
+  register alice
+  reset-password alice
+  create household "Maple House"
+  create chore "Take out trash"
+  household create "Maple House"
+  household join aB3xQr_kLmN
+  household show 1
+  chore create 1 "Take out trash"
+  chore assign 4 bob
+  chore list 1
+  chore show 4
+  activity complete 4
+  activity incomplete 4
+  activity audit 1
 
--- Household Management (Person 2) --
-  ./cleanplate household create        --name "42 Elm St"
-  ./cleanplate house create            "42 Elm St"
-  ./cleanplate create-household        "42 Elm St"
-  ./cleanplate household join          --code <invite_code>
-  ./cleanplate join-household          <invite_code>
-  ./cleanplate household show          --id <household_id>
-  ./cleanplate household list
-  ./cleanplate household rotate-invite --id <household_id>
-  ./cleanplate household remove-member --id <household_id> --username bob
+The shell also still accepts the explicit flag form when you prefer it.
+For complex commands, omitted fields are prompted for interactively.
 
--- Chore Management (Person 3) --
-  ./cleanplate chore create  --household <id> --title "Take out trash" [--due YYYY-MM-DD] [--assign bob]
-  ./cleanplate create-chore  <id> "Take out trash" [--due YYYY-MM-DD] [--assign bob]
-  ./cleanplate chore assign  --chore <id> --username bob
-  ./cleanplate chore list    --household <id> [--status pending|complete|disputed] [--mine]
-  ./cleanplate chore show    --chore <id>
+-- Identity & Access --
+  register [--username <name>]
+  login [--username <name>]
+  reset-password [--username <name>]
+  logout
+  whoami
 
--- Activity & Completion (Person 4) --
-  ./cleanplate activity complete --chore <id>
-  ./cleanplate complete          <id>
-  ./cleanplate activity dispute  --chore <id> --reason "Floor still dirty"
-  ./cleanplate activity resolve  --complaint <id> --outcome uphold|dismiss --note "..."
-  ./cleanplate activity audit    --household <id>
-  ./cleanplate audit             <household_id>
-  ./cleanplate activity poll
+-- Household Management --
+  household create        [--name "42 Elm St"]
+  household join          [--code <invite_code>]
+  household show          [--id <household_id>]
+  household list
+  household rotate-invite [--id <household_id>]
+  household remove-member [--id <household_id>] [--username bob]
+
+-- Chore Management --
+  chore create     [--household <id>] [--title "Take out trash"] [--due YYYY-MM-DD] [--assign bob]
+  chore assign     [--chore <id>] [--username bob]
+  chore list       [--household <id>] [--status pending|complete|disputed] [--mine] [--overdue]
+  chore show       [--chore <id>]
+  chore reschedule [--chore <id>] --due YYYY-MM-DD
+
+-- Activity & Completion --
+  activity complete   [--chore <id>]
+  activity incomplete [--chore <id>]
+  activity dispute    [--chore <id>] --reason "Floor still dirty"
+  activity resolve    [--complaint <id>] --outcome uphold|dismiss --note "..."
+  activity audit      [--household <id>]
+  activity poll
 
 
 EXAMPLE WALKTHROUGH
 -------------------
 
-  # Start one continuous command session
-  ./cleanplate interactive
+  # Start the server
+  python3 main.py serve
 
-  # Two users register
-  cleanplate> signup alice
-  cleanplate> signup bob
+  # In another terminal, open the client shell
+  ./cleanplate
 
-  # Alice logs in and creates a household
+  cleanplate> register alice
+  cleanplate> register bob
+
   cleanplate> login alice
-  cleanplate> create-household "42 Elm Street"
+  cleanplate> create household "42 Elm Street"
   # → prints invite code, e.g. "Invite code: aB3xQr_kLmN"
 
-  # Bob logs in and joins
   cleanplate> login bob
-  cleanplate> join-household aB3xQr_kLmN
+  cleanplate> household join aB3xQr_kLmN
 
-  # Bob can also join or create additional households later
-  cleanplate> create-household "Weekend Cabin"
-  cleanplate> household list
-
-  # Alice (admin) creates and assigns a chore
   cleanplate> login alice
-  cleanplate> create-chore 1 "Vacuum living room" --assign bob --due 2025-04-10
+  cleanplate> create chore "Vacuum living room"
+  Household ID: 1
+  Description (blank for none):
+  Due date YYYY-MM-DD (blank for none): 2026-04-10
+  Assign to username (blank for none): bob
 
-  # Bob completes the chore
   cleanplate> login bob
-  cleanplate> complete 1
+  cleanplate> activity complete 1
 
-  # Alice disputes it
   cleanplate> login alice
-  cleanplate> activity dispute --chore 1 --reason "Missed under the couch"
-
-  # Alice resolves her own dispute (uphold = bob must redo it)
-  cleanplate> activity resolve --complaint 1 --outcome uphold --note "Please redo"
-
-  # Anyone can view the audit log
-  cleanplate> audit 1
+  cleanplate> activity dispute 1 --reason "Missed under the couch"
+  cleanplate> activity resolve 1 --outcome uphold --note "Please redo"
+  cleanplate> activity audit 1
   cleanplate> exit
 
 
 FILE LAYOUT
 -----------
-  cleanplate      Shell wrapper for running the CLI
-  main.py         Client entry point + server launcher
-  client_cli.py   Client-side argparse handlers and HTTP calls
-  api_client.py   JSON/HTTP client helper
-  api_server.py   HTTP server exposing command handlers
-  db.py           SQLite schema and query helpers          (server-side)
-  session.py      Client file session + request session scope
-  auth.py         Register, login, logout, whoami          [Person 1]
-  households.py   Create, join, manage households          [Person 2]
-  chores.py       Create, assign, list chores              [Person 3]
-  activity.py     Complete, dispute, resolve, audit log    [Person 4]
-  cleanplate.db  Created automatically on first run
+
+  cleanplate        Shell wrapper that launches the interactive client
+  main.py           Shell launcher + API server entry point
+  client_cli.py     Interactive command handlers and parser wiring
+  api_client.py     JSON/HTTP client helper
+  api_server.py     HTTP server exposing command handlers
+  db.py             SQLite schema and query helpers
+  session.py        Client file session + request session scope
+  auth.py           Register, login, logout, whoami
+  households.py     Create, join, manage households
+  chores.py         Create, assign, list chores
+  activity.py       Complete, dispute, resolve, audit log
+  cleanplate.db     Created automatically on first run
 
 
 ARCHITECTURE
 ------------
 
-  Client:
-    - main.py / client_cli.py
-    - prompts the user, stores local session state, sends JSON requests
+Client:
+  - `./cleanplate` opens a persistent interactive shell
+  - commands are parsed locally, then sent to the HTTP server
+  - session state is stored locally so login persists between commands
 
-  Server:
-    - api_server.py
-    - runs the business logic modules and owns all database access
+Server:
+  - `python3 main.py serve`
+  - runs the business logic modules and owns all database access
 
-  Database:
-    - SQLite remains on the server side only
+Database:
+  - SQLite remains on the server side only
 
 
 SECURITY NOTES
 --------------
-  Passwords : hash password using scrypt,
-              Parameters chosen per OWASP scrypt recommendations:
-              N=2^14 (CPU/memory cost), r=8 (block size), p=1 (parallelism)
-              Salt: 32 random bytes via secrets.token_bytes (CSPRNG).
-              Output: "scrypt:<hex_salt>:<hex_hash>"
 
-              Password strength checker follows these constraints:
+Passwords:
+  - hashed with scrypt
+  - parameters follow the current project settings in `auth.py`
+  - password strength checks reject common, sequential, and weak values
 
-              blacklisted passwords from:
-              https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/common.txt
-              https://github.com/danielmiessler/SecLists/tree/master/Passwords
+Audit log:
+  - HMAC-SHA256 chained
+  - `verify_chain()` detects tampering
 
-              minumum chars: 8
+Session:
+  - stored in `~/.cleanplate_session`
+  - cleared on logout
 
-  Audit log : HMAC-SHA256 chained; verify_chain() detects any tampering.
-  HMAC key  : Stored in DB for prototype; move to env var for alpha.
-  Session   : terminal-scoped ~/.cleanplate_session_<terminal> by default
-              (chmod 600); cleared on logout.
-  Auth      : Role check on every sensitive command, not just at login.
+Authorization:
+  - role checks happen on sensitive commands, not just at login
 
-MULTI-HOUSEHOLD SUPPORT
------------------------
-  A single user account can belong to multiple households at the same time.
-  Membership is tracked per (user_id, household_id), and most commands already
-  scope actions by explicit household id or by the chore's household.
+Multi-household support:
+  - a single user account can belong to multiple households at the same time
+  - membership is tracked per `(user_id, household_id)`
