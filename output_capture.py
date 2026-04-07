@@ -45,7 +45,14 @@ if not isinstance(sys.stdout, _ContextStdout):
 def capture_stdout():
     buffer = io.StringIO()
     token = _CURRENT_STDOUT.set(buffer)
+    # If pytest (or anything else) replaced sys.stdout, reinstall our proxy so
+    # that print() calls inside this scope still route to the per-context buffer.
+    saved = sys.stdout
+    if not isinstance(saved, _ContextStdout):
+        sys.stdout = _ContextStdout()
     try:
         yield buffer
     finally:
+        if not isinstance(saved, _ContextStdout):
+            sys.stdout = saved
         _CURRENT_STDOUT.reset(token)

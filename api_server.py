@@ -25,6 +25,8 @@ from session import load_session, session_scope
 COMMANDS = {
     "register": auth.cmd_register,
     "login": auth.cmd_login,
+    "verify": auth.cmd_verify_email,
+    "resend-verification": auth.cmd_resend_verification,
     "reset-password": auth.cmd_reset_password,
     "forgot-password": auth.cmd_forgot_password,
     "recover-password": auth.cmd_recover_password,
@@ -37,6 +39,9 @@ COMMANDS = {
     "household.rotate-invite": households.cmd_rotate_invite,
     "chore.reschedule": chores.cmd_reschedule_chore,
     "household.remove-member": households.cmd_remove_member,
+    "household.promote": households.cmd_promote_member,
+    "household.demote": households.cmd_demote_member,
+    "household.send-invite": households.cmd_send_invite,
     "chore.create": chores.cmd_create_chore,
     "chore.assign": chores.cmd_assign_chore,
     "chore.list": chores.cmd_list_chores,

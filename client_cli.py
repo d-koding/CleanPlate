@@ -36,6 +36,29 @@ def _prompt_assign_list(prompt: str) -> list[str]:
     return [raw] if raw else []
 
 
+def _validate_username_format(username: str) -> bool:
+    """Client-side format check — mirrors server-side validation in auth.py."""
+    if not username:
+        print("Error: username cannot be empty.")
+        return False
+    if len(username) < 3 or len(username) > 32:
+        print("Error: username must be between 3 and 32 characters.")
+        return False
+    if not all(c.isalnum() or c in "-_" for c in username):
+        print("Error: username may only contain letters, numbers, hyphens, and underscores.")
+        return False
+    return True
+
+
+def _arg(args, primary: str, fallback: str | None = None):
+    value = getattr(args, primary, None)
+    if value is not None:
+        return value
+    if fallback is not None:
+        return getattr(args, fallback, None)
+    return None
+
+
 def _print_output(output: str) -> None:
     if output:
         print(output, end="" if output.endswith("\n") else "\n")
@@ -63,8 +86,21 @@ def _server_session() -> dict:
 
 
 def cmd_register(args) -> None:
-    username = (args.username or _prompt_text("Username: ")).strip()
+    username = (getattr(args, "username", None) or _prompt_text("Username: ")).strip()
+    if not _validate_username_format(username):
+        return
+
+    email = (getattr(args, "email", None) or _prompt_text("Email address: ")).strip()
+
+    from auth import _check_password_strength
     password = getpass.getpass("Password (min 8 chars): ")
+    errors = _check_password_strength(password)
+    if errors:
+        print("Password does not meet requirements:")
+        for e in errors:
+            print(f"  • {e}")
+        return
+
     confirm_password = getpass.getpass("Confirm password: ")
 
     try:
@@ -72,6 +108,7 @@ def cmd_register(args) -> None:
             "register",
             {
                 "username": username,
+                "email": email,
                 "password": password,
                 "confirm_password": confirm_password,
             },
@@ -84,7 +121,9 @@ def cmd_register(args) -> None:
 
 
 def cmd_login(args) -> None:
-    username = (args.username or _prompt_text("Username: ")).strip()
+    username = (getattr(args, "username", None) or _prompt_text("Username or email: ")).strip()
+    if "@" not in username and not _validate_username_format(username):
+        return
     password = getpass.getpass("Password: ")
 
     try:
@@ -97,6 +136,26 @@ def cmd_login(args) -> None:
         print(exc)
         raise SystemExit(1)
     _handle_response(response, persist_session=True)
+
+
+def cmd_verify_email(args) -> None:
+    code = (_arg(args, "code", "code_pos") or input("Verification code: ").strip()).strip()
+    try:
+        response = invoke("verify", {"code": code}, None)
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
+
+
+def cmd_resend_verification(args) -> None:
+    username = (_arg(args, "username", "username_pos") or input("Username or email: ").strip()).strip()
+    try:
+        response = invoke("resend-verification", {"username": username}, None)
+    except ClientError as exc:
+        print(exc)
+        raise SystemExit(1)
+    _handle_response(response)
 
 
 def cmd_reset_password(args) -> None:
@@ -218,6 +277,24 @@ def cmd_list_households(args) -> None:
     _remote_command("household.list", {})
 
 
+def cmd_promote_member(args) -> None:
+    household_id = _arg(args, "id", "id_pos")
+    username = _arg(args, "username", "username_pos")
+    _remote_command("household.promote", {"id": household_id, "username": username})
+
+
+def cmd_demote_member(args) -> None:
+    household_id = _arg(args, "id", "id_pos")
+    username = _arg(args, "username", "username_pos")
+    _remote_command("household.demote", {"id": household_id, "username": username})
+
+
+def cmd_send_invite(args) -> None:
+    household_id = _arg(args, "id", "id_pos")
+    email = _arg(args, "email", "email_pos") or input("Recipient (email or username): ").strip()
+    _remote_command("household.send-invite", {"id": household_id, "email": email})
+
+
 def cmd_create_chore(args) -> None:
     household_id = args.household if args.household is not None else _prompt_int("Household ID: ")
     title = args.title or _prompt_text("Chore title: ")
@@ -336,6 +413,17 @@ def register_subparsers(subparsers) -> None:
     p.set_defaults(username=None, token=None)
     p.set_defaults(func=cmd_recover_password)
 
+    p = subparsers.add_parser("verify", help="Verify your email address with the code that was emailed")
+    p.add_argument("code_pos", nargs="?", help="Verification code")
+    p.add_argument("--code", dest="code", default=None)
+    p.set_defaults(func=cmd_verify_email)
+
+    p = subparsers.add_parser("resend-verification", help="Resend email verification code")
+    p.add_argument("username_pos", nargs="?", help="Your username or email")
+    p.add_argument("--username", dest="username", default=None)
+    p.set_defaults(username=None)
+    p.set_defaults(func=cmd_resend_verification)
+
     p = subparsers.add_parser("logout", help="Log out locally")
     p.set_defaults(func=cmd_logout)
 
@@ -368,6 +456,29 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--id", type=int, default=None, metavar="HOUSEHOLD_ID")
     c.add_argument("--username", default=None)
     c.set_defaults(func=cmd_remove_member)
+
+    c = sub.add_parser("promote", help="Promote a roommate to admin (admin only)")
+    c.add_argument("id_pos", nargs="?", type=int, metavar="HOUSEHOLD_ID")
+    c.add_argument("username_pos", nargs="?", help="Member username")
+    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--username", dest="username", default=None)
+    c.set_defaults(id=None, username=None)
+    c.set_defaults(func=cmd_promote_member)
+
+    c = sub.add_parser("demote", help="Demote an admin to roommate (admin only)")
+    c.add_argument("id_pos", nargs="?", type=int, metavar="HOUSEHOLD_ID")
+    c.add_argument("username_pos", nargs="?", help="Member username")
+    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--username", dest="username", default=None)
+    c.set_defaults(id=None, username=None)
+    c.set_defaults(func=cmd_demote_member)
+
+    c = sub.add_parser("send-invite", help="Email the invite code to a recipient (admin only)")
+    c.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
+    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--email", dest="email", default=None, metavar="EMAIL_OR_USERNAME")
+    c.set_defaults(id=None, email=None)
+    c.set_defaults(func=cmd_send_invite)
 
     p = subparsers.add_parser("chore", help="Chore management commands")
     sub = p.add_subparsers(dest="chore_cmd", required=True)
@@ -429,3 +540,44 @@ def register_subparsers(subparsers) -> None:
 
     c = sub.add_parser("poll", help="View unread notifications")
     c.set_defaults(func=cmd_poll)
+
+    p = subparsers.add_parser("create-household", help="Create a household with a flat command")
+    p.add_argument("name", nargs="?", help="Household name")
+    p.set_defaults(func=cmd_create_household)
+
+    p = subparsers.add_parser("join-household", help="Join a household with a flat command")
+    p.add_argument("code", nargs="?", help="Invite code")
+    p.set_defaults(func=cmd_join_household)
+
+    p = subparsers.add_parser("promote", help="Promote a roommate to admin")
+    p.add_argument("username", metavar="USERNAME")
+    p.set_defaults(id=None, func=cmd_promote_member)
+
+    p = subparsers.add_parser("demote", help="Demote an admin to roommate")
+    p.add_argument("username", metavar="USERNAME")
+    p.set_defaults(id=None, func=cmd_demote_member)
+
+    p = subparsers.add_parser("invite", aliases=["send-invite"], help="Email the invite code to a recipient (email or username)")
+    p.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
+    p.set_defaults(id=None, email=None)
+    p.set_defaults(func=cmd_send_invite)
+
+    p = subparsers.add_parser("create-chore", help="Create a chore with a flat command")
+    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.add_argument("title", nargs="?", help="Chore title")
+    p.add_argument("--description", default="")
+    p.add_argument("--due", default=None, metavar="YYYY-MM-DD")
+    p.add_argument("--assign", action="append", default=[], metavar="USERNAME")
+    p.set_defaults(func=cmd_create_chore)
+
+    p = subparsers.add_parser("complete", help="Complete a chore with a flat command")
+    p.add_argument("chore", type=int, metavar="CHORE_ID")
+    p.set_defaults(func=cmd_complete)
+
+    p = subparsers.add_parser("incomplete", help="Mark a chore incomplete with a flat command")
+    p.add_argument("chore", type=int, metavar="CHORE_ID")
+    p.set_defaults(func=cmd_incomplete)
+
+    p = subparsers.add_parser("audit", help="Audit a household with a flat command")
+    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.set_defaults(func=cmd_audit)

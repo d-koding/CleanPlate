@@ -27,8 +27,12 @@ Username should be HMAC
 import getpass
 import hashlib
 import hmac
+import os
+import re
 import secrets
+import smtplib
 from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
 from pathlib import Path
 from db import execute, query, query_one
 from session import clear_session, load_session, save_session
@@ -96,20 +100,20 @@ def _migrate_legacy_username(row) -> None:
 
 def _find_user_by_username(username: str):
     row = query_one(
-        "SELECT id, username, display_name, password_hash FROM users WHERE username = ?",
+        "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE username = ?",
         (_username_hmac(username),),
     )
     if row is not None:
         if row["display_name"] is None:
             _migrate_legacy_username(row)
             return query_one(
-                "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+                "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
                 (row["id"],),
             )
         return row
 
     legacy_row = query_one(
-        """SELECT id, username, display_name, password_hash
+        """SELECT id, username, display_name, password_hash, email, email_verified
            FROM users
            WHERE username = ? OR display_name = ?""",
         (username, username),
@@ -117,7 +121,7 @@ def _find_user_by_username(username: str):
     if legacy_row is not None:
         _migrate_legacy_username(legacy_row)
         return query_one(
-            "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+            "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
             (legacy_row["id"],),
         )
     return None
@@ -185,6 +189,11 @@ def _check_password_strength(password: str) -> list[str]:
     if password.lower() in _DICTIONARY:
         errors.append("password is a dictionary word")
 
+    if not any(c.isupper() for c in password):
+        errors.append("at least one uppercase letter")
+    if not any(not c.isalnum() for c in password):
+        errors.append("at least one symbol (e.g. !@#$%)")
+
     if len(set(password)) < 3:
         errors.append("password is too repetitive")
     if _is_sequential(password):
@@ -204,6 +213,71 @@ def _is_sequential(password: str) -> bool:
     codes = [ord(c) for c in password]
     diffs = [codes[i+1] - codes[i] for i in range(len(codes) - 1)]
     return all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
+
+
+def _validate_email(email: str) -> bool:
+    """Basic structural check — not exhaustive, just catches obvious garbage."""
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
+def _send_email(recipient: str, subject: str, body: str) -> None:
+    """
+    Send an email via SMTP. Reads config from environment variables:
+      CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_PORT (default 587),
+      CLEANPLATE_SMTP_USER, CLEANPLATE_SMTP_PASS
+    """
+    host = os.environ.get("CLEANPLATE_SMTP_HOST", "")
+    port = int(os.environ.get("CLEANPLATE_SMTP_PORT", "587"))
+    user = os.environ.get("CLEANPLATE_SMTP_USER", "")
+    password = os.environ.get("CLEANPLATE_SMTP_PASS", "")
+
+    if not host or not user:
+        raise ValueError(
+            "SMTP not configured. Set CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_USER, "
+            "and CLEANPLATE_SMTP_PASS environment variables."
+        )
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = recipient
+
+    with smtplib.SMTP(host, port) as smtp:
+        smtp.starttls()
+        if password:
+            smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+def _send_verification_email(email: str, code: str) -> None:
+    body = (
+        f"Welcome to CleanPlate!\n\n"
+        f"Your verification code is:\n\n"
+        f"    {code}\n\n"
+        f"Enter it with:\n\n"
+        f"    verify {code}\n\n"
+        f"This code expires in 24 hours.\n"
+    )
+    _send_email(email, "Verify your CleanPlate account", body)
+
+
+def _issue_verification_code(user_id: int) -> str:
+    code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    execute(
+        """INSERT INTO email_verifications (user_id, code, expires_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET code=excluded.code, expires_at=excluded.expires_at""",
+        (user_id, code, expires_at),
+    )
+    return code
+
+
+def _find_user_by_email(email: str):
+    return query_one(
+        "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE email = ?",
+        (email.strip().lower(),),
+    )
 
 
 def _validate_username(username: str | None) -> str | None:
@@ -238,6 +312,17 @@ def cmd_register(args) -> None:
     if username is None:
         return
 
+    email = getattr(args, "email", None)
+    if email is None:
+        email = input("Email address: ").strip()
+    email = email.strip().lower()
+    if not email:
+        print("Error: email cannot be empty.")
+        return
+    if not _validate_email(email):
+        print("Error: invalid email address.")
+        return
+
     password = getattr(args, "password", None)
     if password is None:
         password = getpass.getpass("Password (min 8 chars): ")
@@ -246,9 +331,8 @@ def cmd_register(args) -> None:
         return
 
     recipe_errors = _check_password_strength(password)
-
     if recipe_errors:
-        print("Error: ")
+        print("Password does not meet requirements:")
         for rule in recipe_errors:
             print(f"  • {rule}")
         return
@@ -274,28 +358,41 @@ def cmd_register(args) -> None:
         print(f"Error: username '{username}' is already taken.")
         return
 
+    if _find_user_by_email(email):
+        print(f"Error: an account with that email already exists.")
+        raise SystemExit(1)
+
     try:
         pw_hash = _hash_password(password)
-        execute(
-            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
-            (_username_hmac(username), username, pw_hash)
+        user_id = execute(
+            "INSERT INTO users (username, display_name, password_hash, email, email_verified) VALUES (?, ?, ?, ?, 0)",
+            (_username_hmac(username), username, pw_hash, email)
         )
     except Exception:
         print("Error: could not create account. Please try again.")
         return
 
-    print(f"Account created for '{username}'. You can now log in.")
+    try:
+        code = _issue_verification_code(user_id)
+        _send_verification_email(email, code)
+        print(f"Account created for '{username}'.")
+        print(f"A verification code has been sent to {email}.")
+        print("Run:  verify <code>  to activate your account.")
+    except Exception as e:
+        print(f"Account created for '{username}', but could not send verification email: {e}")
+        print("Contact your admin to manually verify your account.")
 
 
 def cmd_login(args) -> None:
     """
-    Log in to CleanPlate. Saves a terminal-scoped session locally.
+    Log in to CleanPlate. Accepts username or email address.
     Usage: python main.py login --username alice
+           python main.py login --username alice@example.com
     """
     username = args.username
     if username is None:
-        username = input("Username: ").strip()
-    username = _normalize_username(username)
+        username = input("Username or email: ").strip()
+    username = username.strip()
     password = getattr(args, "password", None)
     if password is None:
         password = getpass.getpass("Password: ")
@@ -304,13 +401,15 @@ def cmd_login(args) -> None:
         return
 
     try:
-        row = _find_user_by_username(username)
+        if "@" in username:
+            row = _find_user_by_email(username)
+        else:
+            row = _find_user_by_username(_normalize_username(username))
     except Exception:
         print("Error: database unavailable.")
         return
 
     # Always run verify even if user not found, to resist timing attacks.
-    # Dummy hash has valid format so scrypt always runs.
     dummy = "scrypt:" + "00" * 32 + ":" + "00" * 32
     stored_hash = row["password_hash"] if row else dummy
     valid = _verify_password(password, stored_hash)
@@ -319,6 +418,11 @@ def cmd_login(args) -> None:
         print("Error: invalid username or password.")
         return
 
+    if not row["email_verified"]:
+        print("Error: your email address has not been verified.")
+        print(f"Check {row['email']} for your verification code, then run:  verify <code>")
+        raise SystemExit(1)
+
     try:
         save_session(row["id"], row["display_name"])
     except Exception:
@@ -326,6 +430,75 @@ def cmd_login(args) -> None:
         return
 
     print(f"Logged in as '{row['display_name']}'.")
+
+
+def cmd_verify_email(args) -> None:
+    """
+    Verify email address with the code that was emailed at registration.
+    Usage: python main.py verify <code>
+    """
+    code = getattr(args, "code", None)
+    if code is None:
+        code = input("Verification code: ").strip()
+    if not code:
+        print("Error: code cannot be empty.")
+        raise SystemExit(1)
+
+    row = query_one(
+        """SELECT ev.user_id, ev.expires_at, u.display_name
+           FROM email_verifications ev
+           JOIN users u ON u.id = ev.user_id
+           WHERE ev.code = ?""",
+        (code,),
+    )
+    if row is None:
+        print("Error: invalid verification code.")
+        raise SystemExit(1)
+
+    expires_at = datetime.fromisoformat(row["expires_at"])
+    if datetime.now(timezone.utc) > expires_at:
+        print("Error: verification code has expired. Run:  resend-verification  to get a new one.")
+        raise SystemExit(1)
+
+    execute("UPDATE users SET email_verified = 1 WHERE id = ?", (row["user_id"],))
+    execute("DELETE FROM email_verifications WHERE user_id = ?", (row["user_id"],))
+
+    print(f"Email verified. Welcome, {row['display_name']}! You can now log in.")
+
+
+def cmd_resend_verification(args) -> None:
+    """
+    Resend the email verification code.
+    Usage: python main.py resend-verification --username alice
+    """
+    username = getattr(args, "username", None)
+    if username is None:
+        username = input("Username or email: ").strip()
+    username = username.strip()
+
+    try:
+        if "@" in username:
+            row = _find_user_by_email(username)
+        else:
+            row = _find_user_by_username(_normalize_username(username))
+    except Exception:
+        print("Error: database unavailable.")
+        return
+
+    if row is None:
+        print("Error: account not found.")
+        return
+
+    if row["email_verified"]:
+        print("Your email is already verified.")
+        return
+
+    try:
+        code = _issue_verification_code(row["id"])
+        _send_verification_email(row["email"], code)
+        print(f"Verification code resent to {row['email']}.")
+    except Exception as e:
+        print(f"Error: could not send email: {e}")
 
 
 def cmd_reset_password(args) -> None:
@@ -435,10 +608,24 @@ def cmd_forgot_password(args) -> None:
         print("Error: could not create reset token. Please try again.")
         return
 
-    print("If that account exists, a password reset token has been issued.")
-    print("Prototype mode: share this token directly with the user.")
-    print(f"Reset token: {token}")
-    print("This token expires in 15 minutes.")
+    email = row["email"]
+    body = (
+        f"Hi,\n\n"
+        f"A password reset was requested for your CleanPlate account.\n\n"
+        f"Your reset token is:\n\n"
+        f"    {token}\n\n"
+        f"Run this command to reset your password:\n\n"
+        f"    recover-password {username} {token}\n\n"
+        f"This token expires in 15 minutes. If you did not request this, ignore this email.\n"
+    )
+    try:
+        _send_email(email, "CleanPlate password reset", body)
+        print("If that account exists, a password reset token has been sent to the registered email.")
+    except Exception:
+        print("If that account exists, a password reset token has been issued.")
+        print("Prototype mode: share this token directly with the user.")
+        print(f"Reset token: {token}")
+        print("This token expires in 15 minutes.")
 
 
 def cmd_recover_password(args) -> None:
@@ -610,6 +797,14 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("--username", default=None, help="Your username")
     p.add_argument("--token", default=None, help="One-time reset token")
     p.set_defaults(func=cmd_recover_password)
+
+    p = subparsers.add_parser("verify", help="Verify your email address")
+    p.add_argument("code", nargs="?", help="Verification code from email")
+    p.set_defaults(func=cmd_verify_email)
+
+    p = subparsers.add_parser("resend-verification", help="Resend the email verification code")
+    p.add_argument("--username", default=None, help="Your username or email")
+    p.set_defaults(func=cmd_resend_verification)
 
     p = subparsers.add_parser("logout", help="Log out")
     p.set_defaults(func=cmd_logout)

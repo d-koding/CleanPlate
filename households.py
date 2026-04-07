@@ -15,7 +15,7 @@ Standard library only: secrets
 import secrets
 import sqlite3
 
-from auth import _find_user_by_username
+from auth import _find_user_by_username, _send_email
 from db import execute, query, query_one
 from session import require_session
 
@@ -219,6 +219,170 @@ def cmd_remove_member(args) -> None:
     print(f"'{args.username}' removed from household {args.id}.")
 
 
+def cmd_send_invite(args) -> None:
+    """
+    Email the household invite code to a recipient (admin only).
+    Accepts an email address or a username (looks up their registered email).
+    Usage: python main.py household send-invite --id <HID> --email <email|username>
+           python main.py invite bob@example.com
+           python main.py invite bob
+    Requires env vars: CLEANPLATE_SMTP_HOST, CLEANPLATE_SMTP_PORT,
+                       CLEANPLATE_SMTP_USER, CLEANPLATE_SMTP_PASS
+    """
+    session = require_session()
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
+
+    recipient = getattr(args, "email", None) or input("Recipient (email or username): ").strip()
+    if not recipient:
+        print("Error: recipient cannot be empty.")
+        return
+
+    # If not an email address, look up the user's registered email
+    if "@" not in recipient:
+        target = _find_user_by_username(recipient)
+        if not target:
+            print(f"Error: user '{recipient}' not found.")
+            raise SystemExit(1)
+        user_row = query_one("SELECT email FROM users WHERE id = ?", (target["id"],))
+        if not user_row or not user_row["email"]:
+            print(f"Error: '{recipient}' has no email address on file.")
+            raise SystemExit(1)
+        email = user_row["email"]
+    else:
+        email = recipient.strip().lower()
+
+    row = query_one("SELECT * FROM households WHERE id = ?", (household_id,))
+    if row is None:
+        print("Error: household not found.")
+        return
+
+    subject = f"You're invited to join '{row['name']}' on CleanPlate"
+    body = (
+        f"Hi,\n\n"
+        f"You've been invited to join the '{row['name']}' household on CleanPlate.\n\n"
+        f"Use this invite code to join:\n\n"
+        f"    {row['invite_code']}\n\n"
+        f"Run this command to join:\n\n"
+        f"    join-household {row['invite_code']}\n\n"
+        f"Welcome aboard!\n"
+    )
+
+    try:
+        _send_email(email, subject, body)
+    except Exception as e:
+        print(f"Error: could not send email: {e}")
+        return
+
+    from activity import record
+    record(household_id, session["user_id"], "invite.sent", {"email": email})
+
+    print(f"Invite email sent to {email}.")
+
+
+def _resolve_household_id(session: dict, given_id: int | None) -> int | None:
+    """
+    Return the household ID to use for a command.
+    If given_id is provided, use it.
+    If the user is in exactly one household, use that.
+    Otherwise print an error and return None.
+    """
+    if given_id is not None:
+        return given_id
+    rows = query(
+        "SELECT household_id FROM members WHERE user_id = ?",
+        (session["user_id"],)
+    )
+    if not rows:
+        print("Error: you are not a member of any household.")
+        return None
+    if len(rows) > 1:
+        print("Error: you belong to multiple households — specify one with --id <household_id>.")
+        return None
+    return rows[0]["household_id"]
+
+
+def cmd_promote_member(args) -> None:
+    """
+    Promote a roommate to admin (admin only).
+    Usage: python main.py household promote --id <HID> --username <username>
+           python main.py promote <username>   (when in exactly one household)
+    """
+    session = require_session()
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
+
+    target = _find_user_by_username(args.username)
+    if not target:
+        print(f"Error: user '{args.username}' not found.")
+        return
+
+    m = get_membership(target["id"], household_id)
+    if not m:
+        print(f"Error: '{args.username}' is not in this household.")
+        return
+
+    if m["role"] == "admin":
+        print(f"'{args.username}' is already an admin.")
+        return
+
+    execute(
+        "UPDATE members SET role = 'admin' WHERE user_id = ? AND household_id = ?",
+        (target["id"], household_id)
+    )
+
+    from activity import record
+    record(household_id, session["user_id"], "membership.promote", {"username": args.username})
+
+    print(f"'{args.username}' promoted to admin.")
+
+
+def cmd_demote_member(args) -> None:
+    """
+    Demote an admin to roommate (admin only). Cannot demote yourself.
+    Usage: python main.py household demote --id <HID> --username <username>
+           python main.py demote <username>   (when in exactly one household)
+    """
+    session = require_session()
+    household_id = _resolve_household_id(session, getattr(args, "id", None))
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
+
+    self_row = query_one("SELECT display_name FROM users WHERE id = ?", (session["user_id"],))
+    if args.username == self_row["display_name"]:
+        print("Error: you cannot demote yourself.")
+        return
+
+    target = _find_user_by_username(args.username)
+    if not target:
+        print(f"Error: user '{args.username}' not found.")
+        return
+
+    m = get_membership(target["id"], household_id)
+    if not m:
+        print(f"Error: '{args.username}' is not in this household.")
+        return
+
+    if m["role"] == "roommate":
+        print(f"'{args.username}' is already a roommate.")
+        return
+
+    execute(
+        "UPDATE members SET role = 'roommate' WHERE user_id = ? AND household_id = ?",
+        (target["id"], household_id)
+    )
+
+    from activity import record
+    record(household_id, session["user_id"], "membership.demote", {"username": args.username})
+
+    print(f"'{args.username}' demoted to roommate.")
+
+
 def cmd_list_households(args) -> None:
     """
     List all households the current user belongs to.
@@ -278,3 +442,21 @@ def register_subparsers(subparsers) -> None:
     # list
     c = sub.add_parser("list", help="List your households")
     c.set_defaults(func=cmd_list_households)
+
+    # promote
+    c = sub.add_parser("promote", help="Promote a roommate to admin (admin only)")
+    c.add_argument("--id",       type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--username", required=True)
+    c.set_defaults(func=cmd_promote_member)
+
+    # demote
+    c = sub.add_parser("demote", help="Demote an admin to roommate (admin only)")
+    c.add_argument("--id",       type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--username", required=True)
+    c.set_defaults(func=cmd_demote_member)
+
+    # send-invite
+    c = sub.add_parser("send-invite", help="Email the invite code to a recipient (admin only)")
+    c.add_argument("--id",    type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--email", default=None)
+    c.set_defaults(func=cmd_send_invite)

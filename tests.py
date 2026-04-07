@@ -97,7 +97,7 @@ class cleanplateTestCase(unittest.TestCase):
     def create_user(self, username: str, password: str = "GoodPass!123") -> int:
         pw_hash = auth._hash_password(password)
         return db.execute(
-            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, display_name, password_hash, email_verified) VALUES (?, ?, ?, 1)",
             (auth._username_hmac(username), username, pw_hash),
         )
 
@@ -242,7 +242,7 @@ class TestAuth(cleanplateTestCase):
         self.assertEqual(errors, [])
 
     def test_register_login_logout_and_whoami(self):
-        args = Namespace(username="alice")
+        args = Namespace(username="alice", email="alice@test.com")
 
         with patch("getpass.getpass", side_effect=["GoodPass!123", "GoodPass!123"]):
             out = self.capture_output(auth.cmd_register, args)
@@ -250,6 +250,7 @@ class TestAuth(cleanplateTestCase):
 
         row = auth._find_user_by_username("alice")
         self.assertIsNotNone(row)
+        db.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (row["id"],))
 
         with patch("getpass.getpass", return_value="GoodPass!123"):
             out = self.capture_output(auth.cmd_login, args)
@@ -307,7 +308,7 @@ class TestAuth(cleanplateTestCase):
         self.create_user("alice", "GoodPass!123")
 
         with patch("getpass.getpass", side_effect=["OtherGood!123", "OtherGood!123"]):
-            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice", email="alice2@test.com"))
 
         self.assertIn("already taken", out)
 
@@ -325,7 +326,7 @@ class TestAuth(cleanplateTestCase):
 
     def test_register_rejects_password_mismatch(self):
         with patch("getpass.getpass", side_effect=["GoodPass!123", "Mismatch!123"]):
-            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice", email="alice@test.com"))
         self.assertIn("passwords do not match", out.lower())
 
     def test_reset_password_updates_hash_and_allows_login(self):
@@ -1250,11 +1251,13 @@ class TestClientServerArchitecture(cleanplateTestCase):
                 "username": "alice",
                 "password": "GoodPass!123",
                 "confirm_password": "GoodPass!123",
+                "email": "alice@test.com",
             },
             None,
         )
         self.assertTrue(register["ok"])
         self.assertIn("Account created", register["output"])
+        db.execute("UPDATE users SET email_verified = 1 WHERE display_name = 'alice'")
 
         _, login = api_server.invoke_command(
             "login",
@@ -1283,10 +1286,12 @@ class TestClientServerArchitecture(cleanplateTestCase):
                 "username": "alice",
                 "password": "GoodPass!123",
                 "confirm_password": "GoodPass!123",
+                "email": "alice@test.com",
             },
             None,
         )
         self.assertTrue(register["ok"])
+        db.execute("UPDATE users SET email_verified = 1 WHERE display_name = 'alice'")
 
         _, reset = api_server.invoke_command(
             "reset-password",
@@ -1316,10 +1321,12 @@ class TestClientServerArchitecture(cleanplateTestCase):
                 "username": "alice",
                 "password": "GoodPass!123",
                 "confirm_password": "GoodPass!123",
+                "email": "alice@test.com",
             },
             None,
         )
         self.assertTrue(register["ok"])
+        db.execute("UPDATE users SET email_verified = 1 WHERE display_name = 'alice'")
 
         _, forgot = api_server.invoke_command(
             "forgot-password",
@@ -1327,8 +1334,18 @@ class TestClientServerArchitecture(cleanplateTestCase):
             None,
         )
         self.assertTrue(forgot["ok"])
-        self.assertIn("Reset token:", forgot["output"])
-        token = forgot["output"].split("Reset token: ", 1)[1].splitlines()[0].strip()
+        # Token may be printed directly (no SMTP) or sent by email — fetch from DB either way
+        token_row = db.query_one(
+            "SELECT token_hash FROM password_reset_tokens WHERE used = 0 ORDER BY id DESC"
+        )
+        self.assertIsNotNone(token_row)
+        # Re-issue a known token so we can use it in the recover step
+        import secrets, hashlib
+        token = secrets.token_urlsafe(24)
+        db.execute(
+            "UPDATE password_reset_tokens SET token_hash = ? WHERE used = 0",
+            (hashlib.sha256(token.encode()).hexdigest(),),
+        )
 
         _, recover = api_server.invoke_command(
             "recover-password",
@@ -1358,10 +1375,12 @@ class TestClientServerArchitecture(cleanplateTestCase):
                 "username": "alice",
                 "password": "GoodPass!123",
                 "confirm_password": "GoodPass!123",
+                "email": "alice@test.com",
             },
             None,
         )
         self.assertTrue(register["ok"])
+        db.execute("UPDATE users SET email_verified = 1 WHERE display_name = 'alice'")
 
         _, login = api_server.invoke_command(
             "login",
@@ -1417,12 +1436,16 @@ class TestIntegrationWorkflow(cleanplateTestCase):
         db.init_db()
 
         with patch("getpass.getpass", side_effect=["GoodPass!123", "GoodPass!123"]):
-            out = self.capture_output(auth.cmd_register, Namespace(username="alice"))
+            out = self.capture_output(auth.cmd_register, Namespace(username="alice", email="alice@test.com"))
         self.assertIn("Account created for 'alice'", out)
+        alice_row = auth._find_user_by_username("alice")
+        db.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (alice_row["id"],))
 
         with patch("getpass.getpass", side_effect=["GoodPass!456", "GoodPass!456"]):
-            out = self.capture_output(auth.cmd_register, Namespace(username="bob"))
+            out = self.capture_output(auth.cmd_register, Namespace(username="bob", email="bob@test.com"))
         self.assertIn("Account created for 'bob'", out)
+        bob_row = auth._find_user_by_username("bob")
+        db.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (bob_row["id"],))
 
         with patch("getpass.getpass", return_value="GoodPass!123"):
             out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
