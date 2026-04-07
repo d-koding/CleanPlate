@@ -12,7 +12,10 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 
+
+SESSION_TTL_HOURS = 12
 SESSION_PATH: str | None = None
 _MISSING = object()
 _SESSION_OVERRIDE: ContextVar[object] = ContextVar("cleanplate_session_override", default=_MISSING)
@@ -77,32 +80,61 @@ def get_session_path() -> str:
 
 
 def save_session(user_id: int, username: str) -> None:
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)).isoformat()
+
     override = _SESSION_OVERRIDE.get()
     if override is not _MISSING:
-        _SESSION_OVERRIDE.set({"user_id": user_id, "username": username})
+        _SESSION_OVERRIDE.set(
+            {"user_id": user_id, "username": username, "expires_at": expires_at}
+        )
         return
+
     path = get_session_path()
     try:
         with open(path, "w") as f:
-            json.dump({"user_id": user_id, "username": username}, f)
-        os.chmod(path, 0o600)   # readable only by the owning OS user
+            json.dump(
+                {"user_id": user_id, "username": username, "expires_at": expires_at},
+                f,
+            )
+        os.chmod(path, 0o600)
     except OSError as e:
         print(f"Error: could not save session ({e}).")
         raise SystemExit(1)
 
 
+
 def load_session() -> dict | None:
     override = _SESSION_OVERRIDE.get()
     if override is not _MISSING:
-        return override
-    path = get_session_path()
-    if not os.path.exists(path):
+        session = override
+    else:
+        path = get_session_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                session = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    if session is None:
         return None
+
+    expires_at = session.get("expires_at")
+    if not expires_at:
+        return session
+
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
         return None
+
+    if expiry <= datetime.now(timezone.utc):
+        clear_session()
+        return None
+
+    return session
+
 
 
 def clear_session() -> None:
@@ -118,12 +150,8 @@ def clear_session() -> None:
 
 
 def require_session() -> dict:
-    """
-    Return the current session or exit with an error.
-    Call this at the top of any command that needs a logged-in user.
-    """
     session = load_session()
     if session is None or "user_id" not in session or "username" not in session:
-        print("Error: session is missing or corrupt. Run:  python main.py login")
+        print("Error: session is missing, expired, or corrupt. Run:  python main.py login")
         raise SystemExit(1)
     return session
