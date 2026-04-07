@@ -245,11 +245,11 @@ def cmd_send_invite(args) -> None:
         target = _find_user_by_username(recipient)
         if not target:
             print(f"Error: user '{recipient}' not found.")
-            return
+            raise SystemExit(1)
         user_row = query_one("SELECT email FROM users WHERE id = ?", (target["id"],))
         if not user_row or not user_row["email"]:
             print(f"Error: '{recipient}' has no email address on file.")
-            return
+            raise SystemExit(1)
         email = user_row["email"]
     else:
         email = recipient.strip().lower()

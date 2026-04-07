@@ -2,6 +2,9 @@
 main.py — cleanplate client CLI and server launcher.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import argparse
 import contextlib
 import io

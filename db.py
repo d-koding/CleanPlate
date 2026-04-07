@@ -178,6 +178,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
         if "email_verified" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        # Grandfather existing accounts that predate email verification
+        conn.execute("UPDATE users SET email_verified = 1 WHERE email IS NULL OR email = ''")
 
         conn.execute(
             "UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''"

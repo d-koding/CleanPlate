@@ -100,20 +100,20 @@ def _migrate_legacy_username(row) -> None:
 
 def _find_user_by_username(username: str):
     row = query_one(
-        "SELECT id, username, display_name, password_hash FROM users WHERE username = ?",
+        "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE username = ?",
         (_username_hmac(username),),
     )
     if row is not None:
         if row["display_name"] is None:
             _migrate_legacy_username(row)
             return query_one(
-                "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+                "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
                 (row["id"],),
             )
         return row
 
     legacy_row = query_one(
-        """SELECT id, username, display_name, password_hash
+        """SELECT id, username, display_name, password_hash, email, email_verified
            FROM users
            WHERE username = ? OR display_name = ?""",
         (username, username),
@@ -121,7 +121,7 @@ def _find_user_by_username(username: str):
     if legacy_row is not None:
         _migrate_legacy_username(legacy_row)
         return query_one(
-            "SELECT id, username, display_name, password_hash FROM users WHERE id = ?",
+            "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
             (legacy_row["id"],),
         )
     return None
@@ -360,7 +360,7 @@ def cmd_register(args) -> None:
 
     if _find_user_by_email(email):
         print(f"Error: an account with that email already exists.")
-        return
+        raise SystemExit(1)
 
     try:
         pw_hash = _hash_password(password)
@@ -421,7 +421,7 @@ def cmd_login(args) -> None:
     if not row["email_verified"]:
         print("Error: your email address has not been verified.")
         print(f"Check {row['email']} for your verification code, then run:  verify <code>")
-        return
+        raise SystemExit(1)
 
     try:
         save_session(row["id"], row["display_name"])
@@ -442,7 +442,7 @@ def cmd_verify_email(args) -> None:
         code = input("Verification code: ").strip()
     if not code:
         print("Error: code cannot be empty.")
-        return
+        raise SystemExit(1)
 
     row = query_one(
         """SELECT ev.user_id, ev.expires_at, u.display_name
@@ -453,12 +453,12 @@ def cmd_verify_email(args) -> None:
     )
     if row is None:
         print("Error: invalid verification code.")
-        return
+        raise SystemExit(1)
 
     expires_at = datetime.fromisoformat(row["expires_at"])
     if datetime.now(timezone.utc) > expires_at:
         print("Error: verification code has expired. Run:  resend-verification  to get a new one.")
-        return
+        raise SystemExit(1)
 
     execute("UPDATE users SET email_verified = 1 WHERE id = ?", (row["user_id"],))
     execute("DELETE FROM email_verifications WHERE user_id = ?", (row["user_id"],))
@@ -608,10 +608,24 @@ def cmd_forgot_password(args) -> None:
         print("Error: could not create reset token. Please try again.")
         return
 
-    print("If that account exists, a password reset token has been issued.")
-    print("Prototype mode: share this token directly with the user.")
-    print(f"Reset token: {token}")
-    print("This token expires in 15 minutes.")
+    email = row["email"]
+    body = (
+        f"Hi,\n\n"
+        f"A password reset was requested for your CleanPlate account.\n\n"
+        f"Your reset token is:\n\n"
+        f"    {token}\n\n"
+        f"Run this command to reset your password:\n\n"
+        f"    recover-password {username} {token}\n\n"
+        f"This token expires in 15 minutes. If you did not request this, ignore this email.\n"
+    )
+    try:
+        _send_email(email, "CleanPlate password reset", body)
+        print("If that account exists, a password reset token has been sent to the registered email.")
+    except Exception:
+        print("If that account exists, a password reset token has been issued.")
+        print("Prototype mode: share this token directly with the user.")
+        print(f"Reset token: {token}")
+        print("This token expires in 15 minutes.")
 
 
 def cmd_recover_password(args) -> None:
