@@ -4,19 +4,24 @@ CleanPlate — Secure Roommate Chore Coordinator
 Standard library only. No pip install required.
 Requires Python 3.10+.
 
-Platform: Linux / macOS. Tested on Ubuntu 22.04.
+Platform: macOS / Linux.
 
 
 OVERVIEW
 --------
 
-CleanPlate now runs as an interactive client session.
+CleanPlate now runs as a shell-wrapped client/server CLI:
 
-- Use `./cleanplate` to open the client shell.
-- Type the normal structured commands inside that shell.
-- Use `python3 main.py serve` to start the API server.
+- `python3 main.py serve` starts the HTTP API server
+- `./cleanplate` or `python3 main.py interactive` opens the interactive client shell
+- commands entered in the shell are parsed locally, then sent to the server
+- the server owns the database and runs the business logic
 
-The client no longer expects you to run app commands directly from your OS shell.
+This means your normal workflow is:
+
+1. start the server in one terminal
+2. open the CleanPlate shell in another terminal
+3. run all app commands inside `cleanplate>`
 
 
 QUICK START
@@ -28,9 +33,9 @@ QUICK START
   # Terminal 2: open the client shell
   ./cleanplate
 
-  cleanplate> register alice
-  cleanplate> login alice
-  cleanplate> household create "42 Elm Street"
+  cleanplate> register --username alice
+  cleanplate> login --username alice
+  cleanplate> household create --name "42 Elm Street"
   cleanplate> household list
   cleanplate> exit
 
@@ -38,35 +43,44 @@ QUICK START
 INTERACTIVE SHELL
 -----------------
 
-Open the client shell with:
+Open the client shell with either:
 
   ./cleanplate
 
+or:
+
+  python3 main.py interactive
+
 Inside the shell:
 
-- Type `help` to see the available command tree.
-- Type `exit` or `quit` to leave the shell.
-- Use the same command structure each time; no wrapper aliases or flat shortcuts.
+- type `help` to show the command tree
+- type `exit`, `quit`, or `q` to leave
+- omitted values are prompted for on many commands
+- shorthand phrases are normalized into the structured command form
 
 Examples:
 
   cleanplate> register alice
   cleanplate> login alice
   cleanplate> whoami
-  cleanplate> create household "Maple House"
   cleanplate> household create "Maple House"
   cleanplate> household join aB3xQr_kLmN
-  cleanplate> create chore "Take out trash"
   cleanplate> chore create 1 "Take out trash"
+  cleanplate> chore reschedule 4 --due 2026-04-20
   cleanplate> activity complete 4
+  cleanplate> activity incomplete 4
   cleanplate> help
   cleanplate> exit
 
-By default the client connects to http://127.0.0.1:8000.
-To use a different server, set CLEANPLATE_SERVER_URL.
-Client logins are terminal-scoped by default, so different terminals can stay
-logged in as different users concurrently. You can also override the local
-session file with CLEANPLATE_SESSION_NAME or CLEANPLATE_SESSION_PATH.
+By default the client connects to `http://127.0.0.1:8000`.
+To use a different server, set `CLEANPLATE_SERVER_URL`.
+
+Local sessions are client-side files. By default they are terminal-scoped when
+possible, so different terminals can stay logged in separately. You can also
+override the session location with:
+
+- `CLEANPLATE_SESSION_NAME`
+- `CLEANPLATE_SESSION_PATH`
 
 
 COMMAND REFERENCE
@@ -74,12 +88,13 @@ COMMAND REFERENCE
 
 Run these inside the `cleanplate>` prompt.
 
-Common interactive shorthand:
-  login alice
+Common shorthand examples:
+
   register alice
+  login alice
   reset-password alice
-  create household "Maple House"
-  create chore "Take out trash"
+  forgot-password alice
+  recover-password alice TOKEN_HERE
   household create "Maple House"
   household join aB3xQr_kLmN
   household show 1
@@ -87,76 +102,103 @@ Common interactive shorthand:
   chore assign 4 bob
   chore list 1
   chore show 4
+  chore reschedule 4 --due 2026-04-20
   activity complete 4
   activity incomplete 4
+  activity dispute 4 --reason "Still dirty"
   activity audit 1
 
-The shell also still accepts the explicit flag form when you prefer it.
-For complex commands, omitted fields are prompted for interactively.
 
--- Identity & Access --
-  register [--username <name>]
-  login [--username <name>]
-  reset-password [--username <name>]
+Identity & Access
+-----------------
+
+  register         [--username <name>]
+  login            [--username <name>]
+  reset-password   [--username <name>]
+  forgot-password  [--username <name>]
+  recover-password [--username <name>] [--token <reset_token>]
   logout
   whoami
 
--- Household Management --
+Notes:
+
+- `reset-password` is for a user who knows their current password
+- `forgot-password` issues a one-time recovery token
+- `recover-password` uses that token to set a new password
+
+
+Household Management
+--------------------
+
   household create        [--name "42 Elm St"]
   household join          [--code <invite_code>]
   household show          [--id <household_id>]
   household list
   household rotate-invite [--id <household_id>]
-  household remove-member [--id <household_id>] [--username bob]
+  household remove-member [--id <household_id>] [--username <name>]
 
--- Chore Management --
-  chore create     [--household <id>] [--title "Take out trash"] [--due YYYY-MM-DD] [--assign bob]
-  chore assign     [--chore <id>] [--username bob]
+
+Chore Management
+----------------
+
+  chore create     [--household <id>] [--title "Take out trash"] [--description "..."] [--due YYYY-MM-DD] [--assign <name>]...
+  chore assign     [--chore <id>] [--username <name>]
   chore list       [--household <id>] [--status pending|complete|disputed] [--mine] [--overdue]
   chore show       [--chore <id>]
-  chore reschedule [--chore <id>] --due YYYY-MM-DD
+  chore reschedule [--chore <id>] [--due YYYY-MM-DD]
 
--- Activity & Completion --
+Notes:
+
+- chore titles are not treated as globally unique; recurring chores can reuse a name
+- chores can have multiple assignees
+- `chore reschedule` can both add a first due date and change an existing one
+
+
+Activity & Completion
+---------------------
+
   activity complete   [--chore <id>]
   activity incomplete [--chore <id>]
-  activity dispute    [--chore <id>] --reason "Floor still dirty"
-  activity resolve    [--complaint <id>] --outcome uphold|dismiss --note "..."
+  activity dispute    [--chore <id>] [--reason "..."]
+  activity resolve    [--complaint <id>] [--outcome uphold|dismiss] [--note "..."]
   activity audit      [--household <id>]
   activity poll
+
+Notes:
+
+- any assigned roommate can mark a shared chore complete
+- assigned roommates and admins can also mark a completed chore back to `pending`
+- disputes remain available for “redo” and complaint resolution workflows
 
 
 EXAMPLE WALKTHROUGH
 -------------------
 
-  # Start the server
+  # Terminal 1
   python3 main.py serve
 
-  # In another terminal, open the client shell
+  # Terminal 2
   ./cleanplate
 
   cleanplate> register alice
   cleanplate> register bob
 
   cleanplate> login alice
-  cleanplate> create household "42 Elm Street"
-  # → prints invite code, e.g. "Invite code: aB3xQr_kLmN"
+  cleanplate> household create "42 Elm Street"
+  # -> prints invite code, e.g. "Invite code: aB3xQr_kLmN"
 
   cleanplate> login bob
   cleanplate> household join aB3xQr_kLmN
 
   cleanplate> login alice
-  cleanplate> create chore "Vacuum living room"
-  Household ID: 1
-  Description (blank for none):
-  Due date YYYY-MM-DD (blank for none): 2026-04-10
-  Assign to username (blank for none): bob
+  cleanplate> chore create 1 "Vacuum living room" --due 2026-04-10 --assign bob --assign alice
 
   cleanplate> login bob
   cleanplate> activity complete 1
 
   cleanplate> login alice
-  cleanplate> activity dispute 1 --reason "Missed under the couch"
-  cleanplate> activity resolve 1 --outcome uphold --note "Please redo"
+  cleanplate> activity incomplete 1
+  cleanplate> chore reschedule 1 --due 2026-04-17
   cleanplate> activity audit 1
   cleanplate> exit
 
@@ -165,54 +207,83 @@ FILE LAYOUT
 -----------
 
   cleanplate        Shell wrapper that launches the interactive client
-  main.py           Shell launcher + API server entry point
-  client_cli.py     Interactive command handlers and parser wiring
+  main.py           Entry point for the server and interactive shell
+  client_cli.py     Client-side shell handlers and parser wiring
   api_client.py     JSON/HTTP client helper
-  api_server.py     HTTP server exposing command handlers
+  api_server.py     HTTP transport and server-side command dispatch
   db.py             SQLite schema and query helpers
-  session.py        Client file session + request session scope
-  auth.py           Register, login, logout, whoami
-  households.py     Create, join, manage households
-  chores.py         Create, assign, list chores
-  activity.py       Complete, dispute, resolve, audit log
+  session.py        Local client session storage and request-scoped session override
+  auth.py           Registration, login, password reset/recovery
+  households.py     Household creation, joining, invites, membership
+  chores.py         Chore creation, assignment, listing, rescheduling
+  activity.py       Completion, incompletion, disputes, audit log, notifications
   cleanplate.db     Created automatically on first run
 
 
 ARCHITECTURE
 ------------
 
-Client:
-  - `./cleanplate` opens a persistent interactive shell
-  - commands are parsed locally, then sent to the HTTP server
-  - session state is stored locally so login persists between commands
+Client shell:
+
+- `./cleanplate` or `python3 main.py interactive`
+- parses commands locally
+- prompts for missing inputs
+- sends requests to the API server
+- stores the local session file
 
 Server:
-  - `python3 main.py serve`
-  - runs the business logic modules and owns all database access
+
+- `python3 main.py serve`
+- receives JSON requests over HTTP
+- dispatches them to the feature modules
+- owns all database access
+
+Feature modules:
+
+- `auth.py`, `households.py`, `chores.py`, and `activity.py`
+- contain the actual business logic, validation, role checks, and audit writes
 
 Database:
-  - SQLite remains on the server side only
+
+- SQLite via `db.py`
+- accessed only on the server side
 
 
 SECURITY NOTES
 --------------
 
 Passwords:
-  - hashed with scrypt
-  - parameters follow the current project settings in `auth.py`
-  - password strength checks reject common, sequential, and weak values
+
+- stored with `scrypt`
+- password strength checks reject common, sequential, and weak passwords
+
+Usernames:
+
+- stored as HMAC-SHA256 digests at rest
+- human-readable usernames are kept separately as `display_name`
+
+Password recovery:
+
+- recovery uses one-time reset tokens stored as hashes
+- tokens expire after 15 minutes
+- prototype mode currently prints the token instead of sending email
 
 Audit log:
-  - HMAC-SHA256 chained
-  - `verify_chain()` detects tampering
 
-Session:
-  - stored in `~/.cleanplate_session`
-  - cleared on logout
+- HMAC-SHA256 chained
+- `verify_chain()` detects tampering
+
+Sessions:
+
+- stored locally on the client side
+- expire automatically after the configured TTL in `session.py`
+- cleared on logout
 
 Authorization:
-  - role checks happen on sensitive commands, not just at login
+
+- role checks happen inside the command handlers, not just at login
 
 Multi-household support:
-  - a single user account can belong to multiple households at the same time
-  - membership is tracked per `(user_id, household_id)`
+
+- a single user can belong to multiple households
+- membership is tracked per `(user_id, household_id)`

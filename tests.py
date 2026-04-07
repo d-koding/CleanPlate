@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -122,6 +123,7 @@ class TestSessionModule(cleanplateTestCase):
 
         self.assertEqual(loaded["user_id"], 7)
         self.assertEqual(loaded["username"], "alice")
+        self.assertIn("expires_at", loaded)
         self.assertTrue(os.path.exists(self.session_path))
 
     def test_clear_session_removes_file(self):
@@ -142,6 +144,37 @@ class TestSessionModule(cleanplateTestCase):
 
         self.assertEqual(loaded["user_id"], 3)
         self.assertEqual(loaded["username"], "bob")
+
+    def test_load_session_returns_none_when_expired(self):
+        expired = {
+            "user_id": 7,
+            "username": "alice",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+        with open(self.session_path, "w", encoding="utf-8") as f:
+            json.dump(expired, f)
+
+        loaded = session.load_session()
+
+        self.assertIsNone(loaded)
+        self.assertFalse(os.path.exists(self.session_path))
+
+    def test_require_session_rejects_expired_session(self):
+        expired = {
+            "user_id": 3,
+            "username": "bob",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+        with open(self.session_path, "w", encoding="utf-8") as f:
+            json.dump(expired, f)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit):
+                session.require_session()
+        out = buf.getvalue()
+
+        self.assertIn("expired", out.lower())
 
     def test_session_name_env_var_creates_isolated_paths(self):
         session.SESSION_PATH = None
