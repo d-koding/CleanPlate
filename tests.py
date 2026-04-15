@@ -296,17 +296,17 @@ class TestAuth(cleanplateTestCase):
                 auth._get_username_hmac_key()
 
     def test_password_strength_checker_flags_common_password(self):
-        errors = auth._check_password_strength("password")
+        errors, _ = auth._check_password_strength("password")
         joined = " | ".join(errors).lower()
         self.assertTrue("common" in joined or "breach" in joined)
 
     def test_password_strength_checker_flags_sequential_password(self):
-        errors = auth._check_password_strength("12345678")
+        errors, _ = auth._check_password_strength("12345678")
         joined = " | ".join(errors).lower()
         self.assertIn("sequential", joined)
 
     def test_password_strength_checker_accepts_reasonable_password(self):
-        errors = auth._check_password_strength("ValidPass!482")
+        errors, _ = auth._check_password_strength("correct-horse-battery-staple-42")
         self.assertEqual(errors, [])
 
     def test_register_login_logout_and_whoami(self):

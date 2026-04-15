@@ -96,13 +96,9 @@ def cmd_register(args) -> None:
 
     email = (getattr(args, "email", None) or _prompt_text("Email address: ")).strip()
 
-    from auth import _check_password_strength
-    password = getpass.getpass("Password (min 8 chars): ")
-    errors = _check_password_strength(password)
-    if errors:
-        print("Password does not meet requirements:")
-        for e in errors:
-            print(f"  • {e}")
+    from auth import _prompt_password_with_strength
+    password = _prompt_password_with_strength()
+    if password is None:
         return
 
     confirm_password = getpass.getpass("Confirm password: ")
@@ -163,9 +159,12 @@ def cmd_resend_verification(args) -> None:
 
 
 def cmd_reset_password(args) -> None:
+    from auth import _prompt_password_with_strength
     username = (args.username or _prompt_text("Username: ")).strip()
     current_password = getpass.getpass("Current password: ")
-    new_password = getpass.getpass("New password (min 8 chars): ")
+    new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+    if new_password is None:
+        return
     confirm_password = getpass.getpass("Confirm new password: ")
 
     try:
@@ -201,9 +200,12 @@ def cmd_forgot_password(args) -> None:
 
 
 def cmd_recover_password(args) -> None:
+    from auth import _prompt_password_with_strength
     username = (_arg(args, "username", "username_pos") or input("Username: ").strip()).strip()
     token = (_arg(args, "token", "token_pos") or input("Reset token: ").strip()).strip()
-    new_password = getpass.getpass("New password (min 8 chars): ")
+    new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+    if new_password is None:
+        return
     confirm_password = getpass.getpass("Confirm new password: ")
 
     try:
