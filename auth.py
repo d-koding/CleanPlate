@@ -7,20 +7,15 @@ Responsibilities:
   - Password hashing (all crypto decisions live here)
   - Session management helpers
 
-Standard library only: hashlib, hmac, secrets, getpass
+Dependencies: hashlib, hmac, secrets, getpass (stdlib); zxcvbn (third-party)
 
-Password strength checker follows these constraints:
-
-blacklisted passwords from:
-https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/common.txt
-https://github.com/danielmiessler/SecLists/tree/master/Passwords
-
-minimum chars: 8
-zxcvbn score: at least 2 (out of 4)
+Password strength requirements:
+  - minimum 8 characters
+  - not in common/compromised password lists (SecLists 10k + common.txt)
+  - zxcvbn score ≥ 2 out of 4 ("fair" or better)
+  - interactive prompts loop and display zxcvbn feedback until the requirement is met
 
 TODO:
-Password reset / password recovery
-
 Username should be HMAC
 
 """
