@@ -53,6 +53,8 @@ def _load_wordlist(filename: str) -> frozenset[str]:
 
 _COMPROMISED_PASSWORDS = _load_wordlist("10k-most-common.txt")
 _DICTIONARY = _load_wordlist("common.txt")
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_MINUTES = 15
 
 
 # ---------------------------------------------------------------------------
@@ -100,20 +102,27 @@ def _migrate_legacy_username(row) -> None:
 
 def _find_user_by_username(username: str):
     row = query_one(
-        "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE username = ?",
+        """SELECT id, username, display_name, password_hash, email, email_verified,
+                  failed_login_attempts, locked_until
+           FROM users
+           WHERE username = ?""",
         (_username_hmac(username),),
     )
     if row is not None:
         if row["display_name"] is None:
             _migrate_legacy_username(row)
             return query_one(
-                "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
+                """SELECT id, username, display_name, password_hash, email, email_verified,
+                          failed_login_attempts, locked_until
+                   FROM users
+                   WHERE id = ?""",
                 (row["id"],),
             )
         return row
 
     legacy_row = query_one(
-        """SELECT id, username, display_name, password_hash, email, email_verified
+        """SELECT id, username, display_name, password_hash, email, email_verified,
+                  failed_login_attempts, locked_until
            FROM users
            WHERE username = ? OR display_name = ?""",
         (username, username),
@@ -121,7 +130,10 @@ def _find_user_by_username(username: str):
     if legacy_row is not None:
         _migrate_legacy_username(legacy_row)
         return query_one(
-            "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE id = ?",
+            """SELECT id, username, display_name, password_hash, email, email_verified,
+                      failed_login_attempts, locked_until
+               FROM users
+               WHERE id = ?""",
             (legacy_row["id"],),
         )
     return None
@@ -275,8 +287,39 @@ def _issue_verification_code(user_id: int) -> str:
 
 def _find_user_by_email(email: str):
     return query_one(
-        "SELECT id, username, display_name, password_hash, email, email_verified FROM users WHERE email = ?",
+        """SELECT id, username, display_name, password_hash, email, email_verified,
+                  failed_login_attempts, locked_until
+           FROM users
+           WHERE email = ?""",
         (email.strip().lower(),),
+    )
+
+
+def _record_failed_login(user_id: int, attempts: int) -> None:
+    if attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+        locked_until = (datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+        execute(
+            """UPDATE users
+               SET failed_login_attempts = 0, locked_until = ?
+               WHERE id = ?""",
+            (locked_until, user_id),
+        )
+        return
+
+    execute(
+        """UPDATE users
+           SET failed_login_attempts = ?, locked_until = NULL
+           WHERE id = ?""",
+        (attempts, user_id),
+    )
+
+
+def _clear_login_failures(user_id: int) -> None:
+    execute(
+        """UPDATE users
+           SET failed_login_attempts = 0, locked_until = NULL
+           WHERE id = ?""",
+        (user_id,),
     )
 
 
@@ -409,12 +452,28 @@ def cmd_login(args) -> None:
         print("Error: database unavailable.")
         return
 
+    if row is not None and row["locked_until"]:
+        try:
+            locked_until = datetime.fromisoformat(row["locked_until"])
+        except ValueError:
+            locked_until = None
+        if locked_until is not None and locked_until > datetime.now(timezone.utc):
+            print(
+                "Error: too many failed login attempts. "
+                f"Try again after {locked_until.strftime('%Y-%m-%d %H:%M:%S UTC')}."
+            )
+            return
+        _clear_login_failures(row["id"])
+        row = _find_user_by_email(username) if "@" in username else _find_user_by_username(_normalize_username(username))
+
     # Always run verify even if user not found, to resist timing attacks.
     dummy = "scrypt:" + "00" * 32 + ":" + "00" * 32
     stored_hash = row["password_hash"] if row else dummy
     valid = _verify_password(password, stored_hash)
 
     if row is None or not valid:
+        if row is not None:
+            _record_failed_login(row["id"], row["failed_login_attempts"] + 1)
         print("Error: invalid username or password.")
         return
 
@@ -424,6 +483,7 @@ def cmd_login(args) -> None:
         raise SystemExit(1)
 
     try:
+        _clear_login_failures(row["id"])
         save_session(row["id"], row["display_name"])
     except Exception:
         print("Error: could not save session.")
