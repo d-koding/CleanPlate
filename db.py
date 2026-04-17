@@ -58,6 +58,8 @@ def init_db() -> None:
                 username      TEXT    NOT NULL UNIQUE,
                 display_name  TEXT,
                 password_hash TEXT    NOT NULL,
+                failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until  TEXT,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -178,6 +180,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
         if "email_verified" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        if "failed_login_attempts" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0")
+        if "locked_until" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
         # Grandfather existing accounts that predate email verification
         conn.execute("UPDATE users SET email_verified = 1 WHERE email IS NULL OR email = ''")
 

@@ -337,6 +337,39 @@ class TestAuth(cleanplateTestCase):
         self.assertIn("Error: invalid username or password.", out)
         self.assertIsNone(session.load_session())
 
+    def test_login_locks_after_repeated_failures(self):
+        self.create_user("alice", "GoodPass!123")
+
+        for _ in range(auth.MAX_FAILED_LOGIN_ATTEMPTS):
+            with patch("getpass.getpass", return_value="wrongpass"):
+                out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+
+        self.assertIn("invalid username or password", out.lower())
+        row = auth._find_user_by_username("alice")
+        self.assertEqual(row["failed_login_attempts"], 0)
+        self.assertIsNotNone(row["locked_until"])
+
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            locked_out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+
+        self.assertIn("too many failed login attempts", locked_out.lower())
+
+    def test_successful_login_clears_failed_attempts(self):
+        self.create_user("alice", "GoodPass!123")
+        row = auth._find_user_by_username("alice")
+        db.execute(
+            "UPDATE users SET failed_login_attempts = 3, locked_until = NULL, email_verified = 1 WHERE id = ?",
+            (row["id"],),
+        )
+
+        with patch("getpass.getpass", return_value="GoodPass!123"):
+            out = self.capture_output(auth.cmd_login, Namespace(username="alice"))
+
+        self.assertIn("Logged in as 'alice'", out)
+        updated = auth._find_user_by_username("alice")
+        self.assertEqual(updated["failed_login_attempts"], 0)
+        self.assertIsNone(updated["locked_until"])
+
     def test_register_rejects_duplicate_username(self):
         self.create_user("alice", "GoodPass!123")
 
