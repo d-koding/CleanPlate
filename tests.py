@@ -660,6 +660,51 @@ class TestHouseholds(cleanplateTestCase):
         self.assertIsNotNone(audit_leave)
         self.assertIsNotNone(audit_promote)
 
+    def test_sole_admin_leave_with_one_roommate_promotes_remaining_member(self):
+        household = self.create_household_as_alice("One Remaining House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="One Remaining House"),
+        )
+
+        self.assertIn("You left household 'One Remaining House'.", out)
+        self.assertIn("'bob' was automatically promoted to admin.", out)
+        bob_member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertEqual(bob_member["role"], "admin")
+
+    def test_last_member_leave_deletes_household(self):
+        household = self.create_household_as_alice("Solo House")
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Solo House"),
+        )
+
+        self.assertIn("You left household 'Solo House'.", out)
+        self.assertIn("was deleted", out)
+        deleted_household = db.query_one(
+            "SELECT * FROM households WHERE id = ?",
+            (household["id"],),
+        )
+        deleted_membership = db.query_one(
+            "SELECT * FROM members WHERE household_id = ?",
+            (household["id"],),
+        )
+        self.assertIsNone(deleted_household)
+        self.assertIsNone(deleted_membership)
+
     def test_admin_can_promote_roommate(self):
         household = self.create_household_as_alice("Role House")
 

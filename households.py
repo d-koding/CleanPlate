@@ -107,6 +107,30 @@ def _promote_successor_if_needed(household_id: int, departing_user_id: int) -> s
     return promoted_user["display_name"] if promoted_user is not None else None
 
 
+def _count_members(household_id: int) -> int:
+    row = query_one(
+        "SELECT COUNT(*) AS count FROM members WHERE household_id = ?",
+        (household_id,),
+    )
+    return row["count"] if row is not None else 0
+
+
+def _delete_household_if_empty(household_id: int) -> bool:
+    if _count_members(household_id) != 0:
+        return False
+
+    execute(
+        """DELETE FROM complaints
+           WHERE chore_id IN (SELECT id FROM chores WHERE household_id = ?)""",
+        (household_id,),
+    )
+    execute("DELETE FROM notifications WHERE household_id = ?", (household_id,))
+    execute("DELETE FROM audit_log WHERE household_id = ?", (household_id,))
+    execute("DELETE FROM chores WHERE household_id = ?", (household_id,))
+    execute("DELETE FROM households WHERE id = ?", (household_id,))
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -306,23 +330,27 @@ def cmd_leave_household(args) -> None:
         "DELETE FROM members WHERE user_id = ? AND household_id = ?",
         (session["user_id"], household_id),
     )
+    household_deleted = _delete_household_if_empty(household_id)
 
     from activity import record
-    record(
-        household_id,
-        session["user_id"],
-        "membership.leave",
-        {"username": session["username"]},
-    )
-    if promoted_username is not None and membership["role"] == "admin":
+    if not household_deleted:
         record(
             household_id,
             session["user_id"],
-            "membership.promote",
-            {"username": promoted_username, "reason": "admin_departure"},
+            "membership.leave",
+            {"username": session["username"]},
         )
+        if promoted_username is not None and membership["role"] == "admin":
+            record(
+                household_id,
+                session["user_id"],
+                "membership.promote",
+                {"username": promoted_username, "reason": "admin_departure"},
+            )
 
     print(f"You left household '{household_name}'.")
+    if household_deleted:
+        print(f"Household '{household_name}' had no remaining members and was deleted.")
     if promoted_username is not None:
         print(f"'{promoted_username}' was automatically promoted to admin.")
 
