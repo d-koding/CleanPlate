@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 
 from db import execute, query, query_one
-from households import get_membership, require_membership
+from households import get_membership, require_membership, _resolve_household_id
 from session import require_session
 
 
@@ -362,13 +362,16 @@ def cmd_resolve(args) -> None:
 def cmd_audit(args) -> None:
     """
     Display the audit log for a household, with chain integrity check.
-    Usage: python main.py activity audit --household <id>
+    Usage: python main.py activity audit --household "Maple House"
     """
     session = require_session()
-    require_membership(session["user_id"], args.household)
-    membership = get_membership(session["user_id"], args.household)
+    household_id = _resolve_household_id(session, args.household)
+    if household_id is None:
+        return
+    require_membership(session["user_id"], household_id)
+    membership = get_membership(session["user_id"], household_id)
 
-    ok, msg = verify_chain(args.household)
+    ok, msg = verify_chain(household_id)
     if ok:
         print("✓ Chain integrity verified — log has not been tampered with.\n")
     else:
@@ -379,7 +382,7 @@ def cmd_audit(args) -> None:
            FROM audit_log a JOIN users u ON u.id = a.actor_id
            WHERE a.household_id = ?
            ORDER BY a.seq DESC""",
-        (args.household,)
+        (household_id,)
     )
 
     if not entries:
@@ -459,7 +462,7 @@ def register_subparsers(subparsers) -> None:
 
     # audit
     c = sub.add_parser("audit", help="View audit log for a household")
-    c.add_argument("--household", type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", required=True, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_audit)
 
     # poll

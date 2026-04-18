@@ -514,6 +514,13 @@ class TestHouseholds(cleanplateTestCase):
 
         self.assertIn("name cannot be empty", out.lower())
 
+    def test_create_household_rejects_duplicate_name(self):
+        self.create_household_as_alice("Maple House")
+        self.login_as("bob")
+        out = self.capture_output(households.cmd_create_household, Namespace(name="Maple House"))
+
+        self.assertIn("already exists", out.lower())
+
     def test_create_household_rejects_stale_session_user(self):
         session.save_session(9999, "ghost")
         out = self.capture_output(households.cmd_create_household, Namespace(name="Ghost House"))
@@ -544,7 +551,7 @@ class TestHouseholds(cleanplateTestCase):
         self.login_as("alice")
         out = self.capture_output(
             households.cmd_rotate_invite,
-            Namespace(id=household["id"]),
+            Namespace(household="Oak House"),
         )
         self.assertIn("New invite code:", out)
 
@@ -573,7 +580,7 @@ class TestHouseholds(cleanplateTestCase):
         self.login_as("alice")
         out = self.capture_output(
             households.cmd_remove_member,
-            Namespace(id=household["id"], username="bob"),
+            Namespace(household="Pine House", username="bob"),
         )
         self.assertIn("'bob' removed from household", out)
 
@@ -582,6 +589,96 @@ class TestHouseholds(cleanplateTestCase):
             (self.bob_id, household["id"]),
         )
         self.assertIsNone(member)
+
+    def test_admin_can_promote_roommate(self):
+        household = self.create_household_as_alice("Role House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_promote_member,
+            Namespace(household="Role House", username="bob"),
+        )
+
+        self.assertIn("promoted to admin", out.lower())
+        member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertEqual(member["role"], "admin")
+
+    def test_non_admin_cannot_promote_member(self):
+        household = self.create_household_as_alice("Permissions House")
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("bob")
+        with self.assertRaises(SystemExit):
+            households.cmd_promote_member(Namespace(household="Permissions House", username="alice"))
+
+    def test_admin_can_demote_other_admin_when_another_admin_remains(self):
+        household = self.create_household_as_alice("Demotion House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_promote_member,
+            Namespace(household="Demotion House", username="bob"),
+        )
+        self.assertIn("promoted to admin", out.lower())
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_demote_member,
+            Namespace(household="Demotion House", username="bob"),
+        )
+        self.assertIn("demoted to roommate", out.lower())
+        member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertEqual(member["role"], "roommate")
+
+    def test_promote_successor_helper_picks_next_joined_roommate(self):
+        household = self.create_household_as_alice("Succession House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+        self.login_as("cara")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        promoted = households._promote_successor_if_needed(household["id"], self.alice_id)
+
+        self.assertEqual(promoted, "bob")
+        bob_member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        cara_member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.cara_id, household["id"]),
+        )
+        self.assertEqual(bob_member["role"], "admin")
+        self.assertEqual(cara_member["role"], "roommate")
 
     def test_list_households_shows_memberships(self):
         household = self.create_household_as_alice("Cedar House")
@@ -642,7 +739,7 @@ class TestHouseholds(cleanplateTestCase):
         self.login_as("bob")
         self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
         with self.assertRaises(SystemExit):
-            households.cmd_rotate_invite(Namespace(id=household["id"]))
+            households.cmd_rotate_invite(Namespace(household="Maple House"))
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1264,15 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.port, 9000)
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_flat_promote_with_household_name(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["promote", "nat", "--household", "Role House 2"])
+
+        self.assertEqual(args.command, "promote")
+        self.assertEqual(args.username, "nat")
+        self.assertEqual(args.household, "Role House 2")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_rejects_direct_client_command(self):
         parser = main.build_parser()
         with self.assertRaises(SystemExit):
@@ -1226,6 +1332,18 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(
             main._normalize_interactive_argv(["household", "create", "Demo"]),
             ["household", "create", "--name", "Demo"],
+        )
+
+    def test_normalize_interactive_argv_supports_household_show_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["household", "show", "Maple House"]),
+            ["household", "show", "--household", "Maple House"],
+        )
+
+    def test_normalize_interactive_argv_supports_household_promote_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["household", "promote", "Maple House", "bob"]),
+            ["household", "promote", "--household", "Maple House", "--username", "bob"],
         )
 
     def test_normalize_interactive_argv_supports_activity_complete_shorthand(self):
@@ -1288,7 +1406,7 @@ class TestInteractiveShell(cleanplateTestCase):
             assign=None,
         )
 
-        with patch("builtins.input", side_effect=["1", "", "", ""]), patch(
+        with patch("builtins.input", side_effect=["Maple House", "", "", ""]), patch(
             "client_cli._remote_command",
             side_effect=fake_remote,
         ):
@@ -1299,7 +1417,7 @@ class TestInteractiveShell(cleanplateTestCase):
             [(
                 "chore.create",
                 {
-                    "household": 1,
+                    "household": "Maple House",
                     "title": "Take out trash",
                     "description": "",
                     "due": None,

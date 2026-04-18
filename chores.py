@@ -12,7 +12,7 @@ Standard library only.
 
 from auth import _find_user_by_username
 from db import execute, query, query_one
-from households import require_admin, require_membership
+from households import require_admin, require_membership, _resolve_household_id
 from session import require_session
 from datetime import datetime, timezone
 from activity import record
@@ -71,11 +71,14 @@ def _get_chore_assignees(chore_id: int) -> list[str]:
 def cmd_create_chore(args) -> None:
     """
     Create a new chore in a household (admin only).
-    Usage: python main.py chore create --household <id> --title "Take out trash"
+    Usage: python main.py chore create --household "Maple House" --title "Take out trash"
                           [--description "..."] [--due 2025-04-01] [--assign <username>]
     """
     session  = require_session()
-    require_admin(session["user_id"], args.household)
+    household_id = _resolve_household_id(session, args.household)
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
 
     title = args.title
     if title is None:
@@ -91,7 +94,7 @@ def cmd_create_chore(args) -> None:
         WHERE household_id = ?
             AND title = ?
             AND status != 'complete'""",
-        (args.household, title)
+        (household_id, title)
     )
 
     if existing:
@@ -117,7 +120,7 @@ def cmd_create_chore(args) -> None:
         assign_usernames = [args.assign]
     else:
         assign_usernames = args.assign or []
-    assignees, error = _resolve_assignees(args.household, assign_usernames)
+    assignees, error = _resolve_assignees(household_id, assign_usernames)
     if error:
         print(error)
         return
@@ -127,12 +130,12 @@ def cmd_create_chore(args) -> None:
         """INSERT INTO chores
            (household_id, title, description, assigned_to, due_date, created_by)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (args.household, title, description, assigned_to, due_date, session["user_id"])
+        (household_id, title, description, assigned_to, due_date, session["user_id"])
     )
     _set_chore_assignees(chore_id, assignees)
 
     record(
-        args.household,
+        household_id,
         session["user_id"],
         "chore.create",
         {"chore_id": chore_id, "title": title}
@@ -190,15 +193,18 @@ def cmd_assign_chore(args) -> None:
 def cmd_list_chores(args) -> None:
     """
     List chores in a household. Optionally filter by status or assignee.
-    Usage: python main.py chore list --household <id>
+    Usage: python main.py chore list --household "Maple House"
                           [--status pending|complete|disputed]
                           [--mine]
     """
-    session    = require_session()
-    membership = require_membership(session["user_id"], args.household)
+    session = require_session()
+    household_id = _resolve_household_id(session, args.household)
+    if household_id is None:
+        return
+    require_membership(session["user_id"], household_id)
 
     conditions = ["c.household_id = ?"]
-    params     = [args.household]
+    params     = [household_id]
 
     if args.status:
         conditions.append("c.status = ?")
@@ -333,7 +339,7 @@ def register_subparsers(subparsers) -> None:
 
     # create
     c = sub.add_parser("create", help="Create a chore (admin only)")
-    c.add_argument("--household",   type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household",   required=True, metavar="HOUSEHOLD_NAME")
     c.add_argument("--title",       default=None)
     c.add_argument("--description", default="")
     c.add_argument("--due",         default=None, metavar="YYYY-MM-DD")
@@ -355,7 +361,7 @@ def register_subparsers(subparsers) -> None:
 
     # list
     c = sub.add_parser("list", help="List chores in a household")
-    c.add_argument("--household", type=int, required=True, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", required=True, metavar="HOUSEHOLD_NAME")
     c.add_argument("--status",    default=None, choices=["pending", "complete", "disputed"])
     c.add_argument("--mine",      action="store_true", help="Only show chores assigned to you")
     c.add_argument("--overdue", action="store_true", help="Show overdue chores")
