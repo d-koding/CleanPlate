@@ -115,6 +115,17 @@ def _count_members(household_id: int) -> int:
     return row["count"] if row is not None else 0
 
 
+def _user_has_household_named(user_id: int, household_name: str) -> bool:
+    row = query_one(
+        """SELECT 1
+           FROM members m
+           JOIN households h ON h.id = m.household_id
+           WHERE m.user_id = ? AND h.name = ?""",
+        (user_id, household_name),
+    )
+    return row is not None
+
+
 def _delete_household_if_empty(household_id: int) -> bool:
     if _count_members(household_id) != 0:
         return False
@@ -155,8 +166,8 @@ def cmd_create_household(args) -> None:
     if any(ord(c) < 32 for c in name):
         print("Error: household name must not contain control characters.")
         return
-    if query_one("SELECT id FROM households WHERE name = ?", (name,)):
-        print(f"Error: a household named '{name}' already exists.")
+    if _user_has_household_named(session["user_id"], name):
+        print(f"Error: you already belong to a household named '{name}'.")
         return
     user_row = query_one("SELECT id FROM users WHERE id = ?", (session["user_id"],))
     if user_row is None:
@@ -197,6 +208,9 @@ def cmd_join_household(args) -> None:
     existing = get_membership(session["user_id"], row["id"])
     if existing:
         print(f"You are already a member of '{row['name']}'.")
+        return
+    if _user_has_household_named(session["user_id"], row["name"]):
+        print(f"Error: you already belong to a household named '{row['name']}'.")
         return
 
     execute(

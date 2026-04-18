@@ -514,12 +514,24 @@ class TestHouseholds(cleanplateTestCase):
 
         self.assertIn("name cannot be empty", out.lower())
 
-    def test_create_household_rejects_duplicate_name(self):
+    def test_create_household_rejects_duplicate_name_for_same_user(self):
         self.create_household_as_alice("Maple House")
-        self.login_as("bob")
         out = self.capture_output(households.cmd_create_household, Namespace(name="Maple House"))
 
-        self.assertIn("already exists", out.lower())
+        self.assertIn("already belong to a household", out.lower())
+
+    def test_create_household_allows_duplicate_name_for_different_user(self):
+        self.create_household_as_alice("Maple House")
+        self.login_as("bob")
+
+        out = self.capture_output(households.cmd_create_household, Namespace(name="Maple House"))
+
+        self.assertIn("created", out.lower())
+        households_named_maple = db.query(
+            "SELECT * FROM households WHERE name = ? ORDER BY id",
+            ("Maple House",),
+        )
+        self.assertEqual(len(households_named_maple), 2)
 
     def test_create_household_rejects_stale_session_user(self):
         session.save_session(9999, "ghost")
@@ -817,6 +829,29 @@ class TestHouseholds(cleanplateTestCase):
         self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
         out = self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
         self.assertIn("already a member", out.lower())
+
+    def test_join_household_rejects_second_household_with_same_name_for_same_user(self):
+        first = self.create_household_as_alice("Maple House")
+        self.login_as("bob")
+        self.capture_output(households.cmd_join_household, Namespace(code=first["invite_code"]))
+
+        self.login_as("cara")
+        second_out = self.capture_output(
+            households.cmd_create_household,
+            Namespace(name="Maple House"),
+        )
+        self.assertIn("created", second_out.lower())
+        second = db.query_one(
+            "SELECT * FROM households WHERE name = ? ORDER BY id DESC LIMIT 1",
+            ("Maple House",),
+        )
+
+        self.login_as("bob")
+        out = self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=second["invite_code"]),
+        )
+        self.assertIn("already belong to a household", out.lower())
 
     def test_user_can_belong_to_multiple_households(self):
         first = self.create_household_as_alice("Clover House")
