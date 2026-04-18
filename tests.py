@@ -590,6 +590,76 @@ class TestHouseholds(cleanplateTestCase):
         )
         self.assertIsNone(member)
 
+    def test_roommate_can_leave_household(self):
+        household = self.create_household_as_alice("Leave House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        out = self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Leave House"),
+        )
+
+        self.assertIn("You left household 'Leave House'.", out)
+        member = db.query_one(
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        self.assertIsNone(member)
+
+    def test_sole_admin_leave_promotes_next_joined_roommate(self):
+        household = self.create_household_as_alice("Succession Leave House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+        self.login_as("cara")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Succession Leave House"),
+        )
+
+        self.assertIn("You left household 'Succession Leave House'.", out)
+        self.assertIn("'bob' was automatically promoted to admin.", out)
+        alice_member = db.query_one(
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (self.alice_id, household["id"]),
+        )
+        bob_member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.bob_id, household["id"]),
+        )
+        cara_member = db.query_one(
+            "SELECT role FROM members WHERE user_id = ? AND household_id = ?",
+            (self.cara_id, household["id"]),
+        )
+        self.assertIsNone(alice_member)
+        self.assertEqual(bob_member["role"], "admin")
+        self.assertEqual(cara_member["role"], "roommate")
+
+        audit_leave = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (household["id"], "membership.leave"),
+        )
+        audit_promote = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (household["id"], "membership.promote"),
+        )
+        self.assertIsNotNone(audit_leave)
+        self.assertIsNotNone(audit_promote)
+
     def test_admin_can_promote_roommate(self):
         household = self.create_household_as_alice("Role House")
 
@@ -1273,6 +1343,14 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.household, "Role House 2")
         self.assertTrue(callable(args.func))
 
+    def test_build_parser_parses_flat_leave_household(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["leave-household", "Role House 2"])
+
+        self.assertEqual(args.command, "leave-household")
+        self.assertEqual(args.household, "Role House 2")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_rejects_direct_client_command(self):
         parser = main.build_parser()
         with self.assertRaises(SystemExit):
@@ -1332,6 +1410,12 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(
             main._normalize_interactive_argv(["household", "create", "Demo"]),
             ["household", "create", "--name", "Demo"],
+        )
+
+    def test_normalize_interactive_argv_supports_household_leave_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["household", "leave", "Maple House"]),
+            ["household", "leave", "--household", "Maple House"],
         )
 
     def test_normalize_interactive_argv_supports_household_show_shorthand(self):

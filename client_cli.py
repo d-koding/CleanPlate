@@ -277,6 +277,11 @@ def cmd_list_households(args) -> None:
     _remote_command("household.list", {})
 
 
+def cmd_leave_household(args) -> None:
+    household_name = args.household if args.household is not None else _prompt_text("Household name: ")
+    _remote_command("household.leave", {"household": household_name})
+
+
 def cmd_promote_member(args) -> None:
     household_name = _arg(args, "household", "household_pos")
     username = _arg(args, "username", "username_pos")
@@ -448,6 +453,10 @@ def register_subparsers(subparsers) -> None:
     c = sub.add_parser("list", help="List your households")
     c.set_defaults(func=cmd_list_households)
 
+    c = sub.add_parser("leave", help="Leave a household")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    c.set_defaults(func=cmd_leave_household)
+
     c = sub.add_parser("rotate-invite", help="Generate a new invite code (admin)")
     c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_rotate_invite)
@@ -548,6 +557,10 @@ def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("join-household", help="Join a household with a flat command")
     p.add_argument("code", nargs="?", help="Invite code")
     p.set_defaults(func=cmd_join_household)
+
+    p = subparsers.add_parser("leave-household", help="Leave a household with a flat command")
+    p.add_argument("household", nargs="?", metavar="HOUSEHOLD_NAME")
+    p.set_defaults(func=cmd_leave_household)
 
     p = subparsers.add_parser("promote", help="Promote a roommate to admin")
     p.add_argument("username", metavar="USERNAME")

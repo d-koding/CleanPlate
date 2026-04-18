@@ -285,6 +285,48 @@ def cmd_remove_member(args) -> None:
         print(f"'{promoted_username}' was automatically promoted to admin.")
 
 
+def cmd_leave_household(args) -> None:
+    """
+    Leave a household yourself.
+    Usage: python main.py household leave --household "Maple House"
+           python main.py leave-household "Maple House"
+    """
+    session = require_session()
+    household_ref = getattr(args, "household", getattr(args, "id", None))
+    household_id = _resolve_household_id(session, household_ref)
+    if household_id is None:
+        return
+
+    membership = require_membership(session["user_id"], household_id)
+    household_row = query_one("SELECT name FROM households WHERE id = ?", (household_id,))
+    household_name = household_row["name"]
+    promoted_username = _promote_successor_if_needed(household_id, session["user_id"])
+
+    execute(
+        "DELETE FROM members WHERE user_id = ? AND household_id = ?",
+        (session["user_id"], household_id),
+    )
+
+    from activity import record
+    record(
+        household_id,
+        session["user_id"],
+        "membership.leave",
+        {"username": session["username"]},
+    )
+    if promoted_username is not None and membership["role"] == "admin":
+        record(
+            household_id,
+            session["user_id"],
+            "membership.promote",
+            {"username": promoted_username, "reason": "admin_departure"},
+        )
+
+    print(f"You left household '{household_name}'.")
+    if promoted_username is not None:
+        print(f"'{promoted_username}' was automatically promoted to admin.")
+
+
 def cmd_send_invite(args) -> None:
     """
     Email the household invite code to a recipient (admin only).
@@ -532,6 +574,11 @@ def register_subparsers(subparsers) -> None:
     # list
     c = sub.add_parser("list", help="List your households")
     c.set_defaults(func=cmd_list_households)
+
+    # leave
+    c = sub.add_parser("leave", help="Leave a household")
+    c.add_argument("--household", "--id", dest="household", default=None, metavar="HOUSEHOLD_NAME")
+    c.set_defaults(func=cmd_leave_household)
 
     # promote
     c = sub.add_parser("promote", help="Promote a roommate to admin (admin only)")
