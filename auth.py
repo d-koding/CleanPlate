@@ -289,6 +289,21 @@ def _validate_email(email: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
 
 
+def _prompt_email(prompt: str = "Email address: ") -> str | None:
+    """
+    Interactively prompt for an email address, looping until a valid one is given.
+    Returns the normalised email, or None if the user provides an empty input.
+    """
+    while True:
+        email = input(prompt).strip().lower()
+        if not email:
+            print("Error: email cannot be empty.")
+            return None
+        if _validate_email(email):
+            return email
+        print(f"Error: '{email}' is not a valid email address. Please try again.")
+
+
 def _send_email(recipient: str, subject: str, body: str) -> None:
     """
     Send an email via SMTP. Reads config from environment variables:
@@ -414,14 +429,17 @@ def cmd_register(args) -> None:
 
     email = getattr(args, "email", None)
     if email is None:
-        email = input("Email address: ").strip()
-    email = email.strip().lower()
-    if not email:
-        print("Error: email cannot be empty.")
-        return
-    if not _validate_email(email):
-        print("Error: invalid email address.")
-        return
+        email = _prompt_email()
+        if email is None:
+            return
+    else:
+        email = email.strip().lower()
+        if not email:
+            print("Error: email cannot be empty.")
+            return
+        if not _validate_email(email):
+            print("Error: invalid email address.")
+            return
 
     password = getattr(args, "password", None)
     if password is None:

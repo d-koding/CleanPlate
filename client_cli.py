@@ -94,7 +94,18 @@ def cmd_register(args) -> None:
     if not _validate_username_format(username):
         return
 
-    email = (getattr(args, "email", None) or _prompt_text("Email address: ")).strip()
+    _email_arg = getattr(args, "email", None)
+    if _email_arg:
+        email = _email_arg.strip().lower()
+        from auth import _validate_email
+        if not _validate_email(email):
+            print(f"Error: '{email}' is not a valid email address.")
+            return
+    else:
+        from auth import _prompt_email
+        email = _prompt_email()
+        if email is None:
+            return
 
     from auth import _prompt_password_with_strength
     password = _prompt_password_with_strength()
