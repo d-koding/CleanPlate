@@ -258,45 +258,50 @@ def cmd_join_household(args) -> None:
 
 
 def cmd_show_household(args) -> None:
-    household_id = args.id if args.id is not None else _prompt_int("Household ID: ")
-    _remote_command("household.show", {"id": household_id})
+    household_name = args.household if args.household is not None else _prompt_text("Household name: ")
+    _remote_command("household.show", {"household": household_name})
 
 
 def cmd_rotate_invite(args) -> None:
-    household_id = args.id if args.id is not None else _prompt_int("Household ID: ")
-    _remote_command("household.rotate-invite", {"id": household_id})
+    household_name = args.household if args.household is not None else _prompt_text("Household name: ")
+    _remote_command("household.rotate-invite", {"household": household_name})
 
 
 def cmd_remove_member(args) -> None:
-    household_id = args.id if args.id is not None else _prompt_int("Household ID: ")
+    household_name = args.household if args.household is not None else _prompt_text("Household name: ")
     username = args.username or _prompt_text("Username to remove: ")
-    _remote_command("household.remove-member", {"id": household_id, "username": username})
+    _remote_command("household.remove-member", {"household": household_name, "username": username})
 
 
 def cmd_list_households(args) -> None:
     _remote_command("household.list", {})
 
 
+def cmd_leave_household(args) -> None:
+    household_name = args.household if args.household is not None else _prompt_text("Household name: ")
+    _remote_command("household.leave", {"household": household_name})
+
+
 def cmd_promote_member(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
+    household_name = _arg(args, "household", "household_pos")
     username = _arg(args, "username", "username_pos")
-    _remote_command("household.promote", {"id": household_id, "username": username})
+    _remote_command("household.promote", {"household": household_name, "username": username})
 
 
 def cmd_demote_member(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
+    household_name = _arg(args, "household", "household_pos")
     username = _arg(args, "username", "username_pos")
-    _remote_command("household.demote", {"id": household_id, "username": username})
+    _remote_command("household.demote", {"household": household_name, "username": username})
 
 
 def cmd_send_invite(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
+    household_name = _arg(args, "household", "household_pos")
     email = _arg(args, "email", "email_pos") or input("Recipient (email or username): ").strip()
-    _remote_command("household.send-invite", {"id": household_id, "email": email})
+    _remote_command("household.send-invite", {"household": household_name, "email": email})
 
 
 def cmd_create_chore(args) -> None:
-    household_id = args.household if args.household is not None else _prompt_int("Household ID: ")
+    household_id = args.household if args.household is not None else _prompt_text("Household name: ")
     title = args.title or _prompt_text("Chore title: ")
     description = args.description if args.description is not None else (_prompt_optional_text("Description (blank for none): ") or "")
     due = args.due if args.due is not None else _prompt_optional_text("Due date YYYY-MM-DD (blank for none): ")
@@ -320,7 +325,7 @@ def cmd_assign_chore(args) -> None:
 
 
 def cmd_list_chores(args) -> None:
-    household_id = args.household if args.household is not None else _prompt_int("Household ID: ")
+    household_id = args.household if args.household is not None else _prompt_text("Household name: ")
     _remote_command(
         "chore.list",
         {
@@ -364,7 +369,7 @@ def cmd_resolve(args) -> None:
 
 
 def cmd_audit(args) -> None:
-    household_id = args.household if args.household is not None else _prompt_int("Household ID: ")
+    household_id = args.household if args.household is not None else _prompt_text("Household name: ")
     _remote_command("activity.audit", {"household": household_id})
 
 
@@ -442,49 +447,53 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(func=cmd_join_household)
 
     c = sub.add_parser("show", help="Show household info and members")
-    c.add_argument("--id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_show_household)
 
     c = sub.add_parser("list", help="List your households")
     c.set_defaults(func=cmd_list_households)
 
+    c = sub.add_parser("leave", help="Leave a household")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    c.set_defaults(func=cmd_leave_household)
+
     c = sub.add_parser("rotate-invite", help="Generate a new invite code (admin)")
-    c.add_argument("--id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_rotate_invite)
 
     c = sub.add_parser("remove-member", help="Remove a member (admin)")
-    c.add_argument("--id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--username", default=None)
     c.set_defaults(func=cmd_remove_member)
 
     c = sub.add_parser("promote", help="Promote a roommate to admin (admin only)")
-    c.add_argument("id_pos", nargs="?", type=int, metavar="HOUSEHOLD_ID")
+    c.add_argument("household_pos", nargs="?", metavar="HOUSEHOLD_NAME")
     c.add_argument("username_pos", nargs="?", help="Member username")
-    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", dest="household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--username", dest="username", default=None)
-    c.set_defaults(id=None, username=None)
+    c.set_defaults(household=None, username=None)
     c.set_defaults(func=cmd_promote_member)
 
     c = sub.add_parser("demote", help="Demote an admin to roommate (admin only)")
-    c.add_argument("id_pos", nargs="?", type=int, metavar="HOUSEHOLD_ID")
+    c.add_argument("household_pos", nargs="?", metavar="HOUSEHOLD_NAME")
     c.add_argument("username_pos", nargs="?", help="Member username")
-    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", dest="household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--username", dest="username", default=None)
-    c.set_defaults(id=None, username=None)
+    c.set_defaults(household=None, username=None)
     c.set_defaults(func=cmd_demote_member)
 
     c = sub.add_parser("send-invite", help="Email the invite code to a recipient (admin only)")
     c.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
-    c.add_argument("--id", dest="id", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", dest="household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--email", dest="email", default=None, metavar="EMAIL_OR_USERNAME")
-    c.set_defaults(id=None, email=None)
+    c.set_defaults(household=None, email=None)
     c.set_defaults(func=cmd_send_invite)
 
     p = subparsers.add_parser("chore", help="Chore management commands")
     sub = p.add_subparsers(dest="chore_cmd", required=True)
 
     c = sub.add_parser("create", help="Create a chore (admin only)")
-    c.add_argument("--household", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--title", default=None)
     c.add_argument("--description", default=None)
     c.add_argument("--due", default=None, metavar="YYYY-MM-DD")
@@ -497,7 +506,7 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(func=cmd_assign_chore)
 
     c = sub.add_parser("list", help="List chores in a household")
-    c.add_argument("--household", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--status", default=None, choices=["pending", "complete", "disputed"])
     c.add_argument("--mine", action="store_true", help="Only show chores assigned to you")
     c.add_argument("--overdue", action="store_true", help="Show overdue chores")
@@ -535,7 +544,7 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(func=cmd_resolve)
 
     c = sub.add_parser("audit", help="View audit log for a household")
-    c.add_argument("--household", type=int, default=None, metavar="HOUSEHOLD_ID")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_audit)
 
     c = sub.add_parser("poll", help="View unread notifications")
@@ -549,21 +558,28 @@ def register_subparsers(subparsers) -> None:
     p.add_argument("code", nargs="?", help="Invite code")
     p.set_defaults(func=cmd_join_household)
 
+    p = subparsers.add_parser("leave-household", help="Leave a household with a flat command")
+    p.add_argument("household", nargs="?", metavar="HOUSEHOLD_NAME")
+    p.set_defaults(func=cmd_leave_household)
+
     p = subparsers.add_parser("promote", help="Promote a roommate to admin")
     p.add_argument("username", metavar="USERNAME")
-    p.set_defaults(id=None, func=cmd_promote_member)
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.set_defaults(household=None, func=cmd_promote_member)
 
     p = subparsers.add_parser("demote", help="Demote an admin to roommate")
     p.add_argument("username", metavar="USERNAME")
-    p.set_defaults(id=None, func=cmd_demote_member)
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.set_defaults(household=None, func=cmd_demote_member)
 
     p = subparsers.add_parser("invite", aliases=["send-invite"], help="Email the invite code to a recipient (email or username)")
     p.add_argument("email_pos", nargs="?", metavar="EMAIL_OR_USERNAME")
-    p.set_defaults(id=None, email=None)
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.set_defaults(household=None, email=None)
     p.set_defaults(func=cmd_send_invite)
 
     p = subparsers.add_parser("create-chore", help="Create a chore with a flat command")
-    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.add_argument("household", metavar="HOUSEHOLD_NAME")
     p.add_argument("title", nargs="?", help="Chore title")
     p.add_argument("--description", default="")
     p.add_argument("--due", default=None, metavar="YYYY-MM-DD")
@@ -579,5 +595,5 @@ def register_subparsers(subparsers) -> None:
     p.set_defaults(func=cmd_incomplete)
 
     p = subparsers.add_parser("audit", help="Audit a household with a flat command")
-    p.add_argument("household", type=int, metavar="HOUSEHOLD_ID")
+    p.add_argument("household", metavar="HOUSEHOLD_NAME")
     p.set_defaults(func=cmd_audit)

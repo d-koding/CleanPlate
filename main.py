@@ -61,10 +61,16 @@ def _normalize_interactive_argv(argv: list[str]) -> list[str]:
             return [group, subcommand, "--name", argv[2], *argv[3:]]
         if subcommand == "join" and len(argv) >= 3 and not argv[2].startswith("-"):
             return [group, subcommand, "--code", argv[2], *argv[3:]]
+        if subcommand == "leave" and len(argv) >= 3 and not argv[2].startswith("-"):
+            return [group, subcommand, "--household", argv[2], *argv[3:]]
         if subcommand in {"show", "rotate-invite"} and len(argv) >= 3 and not argv[2].startswith("-"):
-            return [group, subcommand, "--id", argv[2], *argv[3:]]
+            return [group, subcommand, "--household", argv[2], *argv[3:]]
         if subcommand == "remove-member" and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
-            return [group, subcommand, "--id", argv[2], "--username", argv[3], *argv[4:]]
+            return [group, subcommand, "--household", argv[2], "--username", argv[3], *argv[4:]]
+        if subcommand in {"promote", "demote"} and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
+            return [group, subcommand, "--household", argv[2], "--username", argv[3], *argv[4:]]
+        if subcommand == "send-invite" and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
+            return [group, subcommand, "--household", argv[2], "--email", argv[3], *argv[4:]]
 
     if group == "chore":
         if subcommand == "create" and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
