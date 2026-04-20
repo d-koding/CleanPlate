@@ -156,6 +156,20 @@ def build_parser() -> argparse.ArgumentParser:
     shell = subparsers.add_parser("interactive", help="Start an interactive CleanPlate command session")
     shell.set_defaults(func=lambda args: _run_interactive_shell(build_command_parser()))
 
+    leave = subparsers.add_parser("leave-household", help="Leave a household with a flat command")
+    leave.add_argument("household", help="Household name")
+    leave.set_defaults(func=client_cli.cmd_leave_household)
+
+    promote = subparsers.add_parser("promote", help="Promote a roommate to admin")
+    promote.add_argument("username", help="Username to promote")
+    promote.add_argument("--household", required=True, help="Household name")
+    promote.set_defaults(func=client_cli.cmd_promote_member)
+
+    demote = subparsers.add_parser("demote", help="Demote an admin to roommate")
+    demote.add_argument("username", help="Username to demote")
+    demote.add_argument("--household", required=True, help="Household name")
+    demote.set_defaults(func=client_cli.cmd_demote_member)
+
     return parser
 
 

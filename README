@@ -28,6 +28,8 @@ QUICK START
 -----------
 
   # Terminal 1: start the server
+  export CLEANPLATE_AUDIT_HMAC_KEY='replace-with-a-long-random-secret'
+  export CLEANPLATE_USERNAME_HMAC_KEY='replace-with-a-second-long-random-secret'
   python3 main.py serve
 
   # Terminal 2: open the client shell
@@ -261,6 +263,8 @@ Usernames:
 
 - stored as HMAC-SHA256 digests at rest
 - human-readable usernames are kept separately as `display_name`
+- server key must come from `CLEANPLATE_USERNAME_HMAC_KEY`
+- `USERNAME_HMAC_KEY` is also accepted for compatibility
 
 Password recovery:
 
@@ -272,6 +276,8 @@ Audit log:
 
 - HMAC-SHA256 chained
 - `verify_chain()` detects tampering
+- server key must come from `CLEANPLATE_AUDIT_HMAC_KEY`
+- `AUDIT_HMAC_KEY` is also accepted for compatibility
 
 Sessions:
 

@@ -8,13 +8,13 @@ Responsibilities:
   - Audit log: appending entries and verifying the chain
   - Notification logic (stub — expand as needed)
 
-Standard library only: hashlib, hmac, json, secrets, datetime
+Standard library only: hashlib, hmac, json, os, datetime
 """
 
 import hashlib
 import hmac
 import json
-import secrets
+import os
 import threading
 from datetime import datetime, timezone
 
@@ -32,23 +32,30 @@ _AUDIT_LOCK = threading.RLock()
 
 def _get_or_create_hmac_key() -> bytes:
     """
-    Return the server-side HMAC key, creating it on first call.
+    Return the server-side HMAC key from the environment.
 
-    TODO (Person 4 + Person 1): Agree on key storage strategy.
-    Current approach: stored in the DB (convenient but means a DB dump
-    is enough to forge entries). Better options:
-      - Read from an environment variable: os.environ["AUDIT_HMAC_KEY"]
-      - Read from a file outside the DB with restricted OS permissions
-      - PBKDF2 with a server-side secret and a household-specific salt (prevents forging across households, but still vulnerable if the server is compromised)
-    For the prototype, DB storage is acceptable. Document the limitation.
+    Supported variables:
+      - CLEANPLATE_AUDIT_HMAC_KEY
+      - AUDIT_HMAC_KEY
+
+    If the value starts with ``hex:``, the remainder is parsed as hex bytes.
+    Otherwise the raw UTF-8 bytes of the environment variable are used.
     """
-    with _AUDIT_LOCK:
-        row = query_one("SELECT key FROM audit_key WHERE id = 1")
-        if row is None:
-            key_hex = secrets.token_hex(32)   # 256-bit key
-            execute("INSERT INTO audit_key (id, key) VALUES (1, ?)", (key_hex,))
-            return bytes.fromhex(key_hex)
-        return bytes.fromhex(row["key"])
+    for env_name in ("CLEANPLATE_AUDIT_HMAC_KEY", "AUDIT_HMAC_KEY"):
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        if value.startswith("hex:"):
+            try:
+                return bytes.fromhex(value[4:])
+            except ValueError as exc:
+                raise RuntimeError(f"{env_name} must contain valid hex after 'hex:'") from exc
+        return value.encode("utf-8", errors="strict")
+
+    raise RuntimeError(
+        "Audit HMAC key is not configured. Set CLEANPLATE_AUDIT_HMAC_KEY "
+        "(or AUDIT_HMAC_KEY) before starting the server."
+    )
 
 
 def _compute_entry_hash(key: bytes, household_id: int, seq: int,

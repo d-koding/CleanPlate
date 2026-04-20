@@ -139,18 +139,6 @@ def init_db() -> None:
                 UNIQUE (household_id, seq)
             );
 
-            -- HMAC key (singleton) -------------------------------------------
-            CREATE TABLE IF NOT EXISTS audit_key (
-                id  INTEGER PRIMARY KEY CHECK (id = 1),
-                key TEXT NOT NULL
-            );
-
-            -- Username HMAC key (singleton) ---------------------------------
-            CREATE TABLE IF NOT EXISTS username_key (
-                id  INTEGER PRIMARY KEY CHECK (id = 1),
-                key TEXT NOT NULL
-            );
-
             -- Password reset tokens -----------------------------------------
             CREATE TABLE IF NOT EXISTS password_reset_tokens (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,

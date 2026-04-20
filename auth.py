@@ -61,14 +61,32 @@ LOGIN_LOCKOUT_MINUTES = 15
 # CRYPTO
 # ---------------------------------------------------------------------------
 
-def _get_or_create_username_hmac_key() -> bytes:
-    """Return the server-side HMAC key used to blind usernames at rest."""
-    row = query_one("SELECT key FROM username_key WHERE id = 1")
-    if row is None:
-        key_hex = secrets.token_hex(32)
-        execute("INSERT INTO username_key (id, key) VALUES (1, ?)", (key_hex,))
-        return bytes.fromhex(key_hex)
-    return bytes.fromhex(row["key"])
+def _get_username_hmac_key() -> bytes:
+    """
+    Return the server-side username HMAC key from the environment.
+
+    Supported variables:
+      - CLEANPLATE_USERNAME_HMAC_KEY
+      - USERNAME_HMAC_KEY
+
+    If the value starts with ``hex:``, the remainder is parsed as hex bytes.
+    Otherwise the raw UTF-8 bytes of the environment variable are used.
+    """
+    for env_name in ("CLEANPLATE_USERNAME_HMAC_KEY", "USERNAME_HMAC_KEY"):
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        if value.startswith("hex:"):
+            try:
+                return bytes.fromhex(value[4:])
+            except ValueError as exc:
+                raise RuntimeError(f"{env_name} must contain valid hex after 'hex:'") from exc
+        return value.encode("utf-8", errors="strict")
+
+    raise RuntimeError(
+        "Username HMAC key is not configured. Set CLEANPLATE_USERNAME_HMAC_KEY "
+        "(or USERNAME_HMAC_KEY) before starting the server."
+    )
 
 
 def _normalize_username(username: str) -> str:
@@ -76,7 +94,7 @@ def _normalize_username(username: str) -> str:
 
 
 def _username_hmac(username: str) -> str:
-    key = _get_or_create_username_hmac_key()
+    key = _get_username_hmac_key()
     normalized = _normalize_username(username).encode("utf-8", errors="replace")
     return hmac.new(key, normalized, hashlib.sha256).hexdigest()
 

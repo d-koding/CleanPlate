@@ -71,6 +71,15 @@ class cleanplateTestCase(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tempdir.name, "test_cleanplate.db")
         self.session_path = os.path.join(self.tempdir.name, "test_session.json")
+        self.audit_env_patcher = patch.dict(
+            os.environ,
+            {
+                "CLEANPLATE_AUDIT_HMAC_KEY": "hex:" + "11" * 32,
+                "CLEANPLATE_USERNAME_HMAC_KEY": "hex:" + "22" * 32,
+            },
+            clear=False,
+        )
+        self.audit_env_patcher.start()
 
         # Point shared modules at isolated temp resources.
         db.DB_PATH = self.db_path
@@ -82,6 +91,7 @@ class cleanplateTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         session.clear_session()
+        self.audit_env_patcher.stop()
         self.tempdir.cleanup()
 
     def capture_output(self, func, *args, **kwargs) -> str:
@@ -202,7 +212,6 @@ class TestDatabaseInitialization(cleanplateTestCase):
         names = {row["name"] for row in rows}
 
         expected = {
-            "audit_key",
             "audit_log",
             "chore_assignees",
             "chores",
@@ -259,6 +268,11 @@ class TestAuth(cleanplateTestCase):
     def test_verify_password_rejects_invalid_hash_format(self):
         self.assertFalse(auth._verify_password("abc", "not-a-real-hash"))
         self.assertFalse(auth._verify_password("abc", "sha256:abc:def"))
+
+    def test_username_hmac_key_must_come_from_environment(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                auth._get_username_hmac_key()
 
     def test_password_strength_checker_flags_common_password(self):
         errors = auth._check_password_strength("password")
@@ -1417,6 +1431,11 @@ class TestActivity(cleanplateTestCase):
         ok, msg = activity.verify_chain(self.household["id"])
         self.assertFalse(ok)
         self.assertIn("HMAC mismatch", msg)
+
+    def test_audit_key_must_come_from_environment(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                activity._get_or_create_hmac_key()
 
     def test_audit_command_prints_integrity_status(self):
         self.login_as("bob")
