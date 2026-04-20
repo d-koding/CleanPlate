@@ -18,7 +18,7 @@ import os
 import threading
 from datetime import datetime, timezone
 
-from db import execute, query, query_one
+from db import execute, execute_tx, query, query_one, query_one_tx, query_tx, transaction
 from households import get_membership, require_membership, _resolve_household_id
 from session import require_session
 
@@ -77,7 +77,14 @@ def _compute_entry_hash(key: bytes, household_id: int, seq: int,
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
-def record(household_id: int, actor_id: int, action: str, details: dict) -> None:
+def record(
+    household_id: int,
+    actor_id: int,
+    action: str,
+    details: dict,
+    *,
+    conn=None,
+) -> None:
     """
     Append a tamper-evident entry to the audit log.
 
@@ -95,10 +102,17 @@ def record(household_id: int, actor_id: int, action: str, details: dict) -> None
 
         # Serialize sequence assignment so concurrent requests cannot create
         # duplicate seq numbers or broken prev_hash chains for a household.
-        last = query_one(
-            "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
-            (household_id,)
-        )
+        if conn is None:
+            last = query_one(
+                "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
+                (household_id,)
+            )
+        else:
+            last = query_one_tx(
+                conn,
+                "SELECT seq, entry_hash FROM audit_log WHERE household_id = ? ORDER BY seq DESC LIMIT 1",
+                (household_id,),
+            )
         seq = (last["seq"] + 1) if last else 1
         prev_hash = last["entry_hash"] if last else ("0" * 64)
 
@@ -109,12 +123,21 @@ def record(household_id: int, actor_id: int, action: str, details: dict) -> None
             actor_id, action, details_json, prev_hash
         )
 
-        execute(
-            """INSERT INTO audit_log
-               (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash)
-        )
+        if conn is None:
+            execute(
+                """INSERT INTO audit_log
+                   (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash)
+            )
+        else:
+            execute_tx(
+                conn,
+                """INSERT INTO audit_log
+                   (household_id, seq, timestamp, actor_id, action, details, prev_hash, entry_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (household_id, seq, timestamp, actor_id, action, details_json, prev_hash, entry_hash),
+            )
 
 
 def verify_chain(household_id: int) -> tuple[bool, str]:
@@ -151,7 +174,13 @@ def verify_chain(household_id: int) -> tuple[bool, str]:
 # NOTIFICATIONS — Person 4 owns this stub
 # ---------------------------------------------------------------------------
 
-def notify(household_id: int, message: str, exclude_user_id: int | None = None) -> None:
+def notify(
+    household_id: int,
+    message: str,
+    exclude_user_id: int | None = None,
+    *,
+    conn=None,
+) -> None:
     """
     Store a notification for each member of the household.
 
@@ -160,10 +189,17 @@ def notify(household_id: int, message: str, exclude_user_id: int | None = None) 
     """
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
-    members = query(
-        "SELECT user_id FROM members WHERE household_id = ?",
-        (household_id,)
-    )
+    if conn is None:
+        members = query(
+            "SELECT user_id FROM members WHERE household_id = ?",
+            (household_id,)
+        )
+    else:
+        members = query_tx(
+            conn,
+            "SELECT user_id FROM members WHERE household_id = ?",
+            (household_id,),
+        )
 
     for member in members:
         user_id = member["user_id"]
@@ -171,11 +207,19 @@ def notify(household_id: int, message: str, exclude_user_id: int | None = None) 
         if exclude_user_id is not None and user_id == exclude_user_id:
             continue
 
-        execute(
-            """INSERT INTO notifications (user_id, household_id, message, created_at, read)
-               VALUES (?, ?, ?, ?, 0)""",
-            (user_id, household_id, message, created_at)
-        )
+        if conn is None:
+            execute(
+                """INSERT INTO notifications (user_id, household_id, message, created_at, read)
+                   VALUES (?, ?, ?, ?, 0)""",
+                (user_id, household_id, message, created_at)
+            )
+        else:
+            execute_tx(
+                conn,
+                """INSERT INTO notifications (user_id, household_id, message, created_at, read)
+                   VALUES (?, ?, ?, ?, 0)""",
+                (user_id, household_id, message, created_at),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -213,17 +257,27 @@ def cmd_complete(args) -> None:
         return
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    execute(
-        "UPDATE chores SET status = 'complete', completed_at = ? WHERE id = ?",
-        (now, args.chore)
-    )
+    with transaction() as conn:
+        execute_tx(
+            conn,
+            "UPDATE chores SET status = 'complete', completed_at = ? WHERE id = ?",
+            (now, args.chore)
+        )
 
-    record(chore["household_id"], session["user_id"], "chore.complete",
-           {"chore_id": args.chore, "title": chore["title"]})
+        record(
+            chore["household_id"],
+            session["user_id"],
+            "chore.complete",
+            {"chore_id": args.chore, "title": chore["title"]},
+            conn=conn,
+        )
 
-    notify(chore["household_id"],
-           f"{session['username']} marked '{chore['title']}' as complete.",
-           exclude_user_id=session["user_id"])
+        notify(
+            chore["household_id"],
+            f"{session['username']} marked '{chore['title']}' as complete.",
+            exclude_user_id=session["user_id"],
+            conn=conn,
+        )
     print(f"Chore '{chore['title']}' marked as complete.")
 
 
@@ -256,23 +310,27 @@ def cmd_incomplete(args) -> None:
         print("Error: you can only mark chores assigned to you as incomplete.")
         return
 
-    execute(
-        "UPDATE chores SET status = 'pending', completed_at = NULL WHERE id = ?",
-        (args.chore,),
-    )
+    with transaction() as conn:
+        execute_tx(
+            conn,
+            "UPDATE chores SET status = 'pending', completed_at = NULL WHERE id = ?",
+            (args.chore,),
+        )
 
-    record(
-        chore["household_id"],
-        session["user_id"],
-        "chore.incomplete",
-        {"chore_id": args.chore, "title": chore["title"]},
-    )
+        record(
+            chore["household_id"],
+            session["user_id"],
+            "chore.incomplete",
+            {"chore_id": args.chore, "title": chore["title"]},
+            conn=conn,
+        )
 
-    notify(
-        chore["household_id"],
-        f"{session['username']} marked '{chore['title']}' as incomplete.",
-        exclude_user_id=session["user_id"],
-    )
+        notify(
+            chore["household_id"],
+            f"{session['username']} marked '{chore['title']}' as incomplete.",
+            exclude_user_id=session["user_id"],
+            conn=conn,
+        )
     print(f"Chore '{chore['title']}' marked as incomplete.")
 
 
@@ -301,18 +359,28 @@ def cmd_dispute(args) -> None:
         print("Error: reason must be 1–1000 characters.")
         return
 
-    complaint_id = execute(
-        "INSERT INTO complaints (chore_id, submitted_by, description) VALUES (?, ?, ?)",
-        (args.chore, session["user_id"], reason)
-    )
-    execute("UPDATE chores SET status = 'disputed' WHERE id = ?", (args.chore,))
+    with transaction() as conn:
+        complaint_id = execute_tx(
+            conn,
+            "INSERT INTO complaints (chore_id, submitted_by, description) VALUES (?, ?, ?)",
+            (args.chore, session["user_id"], reason)
+        )
+        execute_tx(conn, "UPDATE chores SET status = 'disputed' WHERE id = ?", (args.chore,))
 
-    record(chore["household_id"], session["user_id"], "complaint.file",
-           {"chore_id": args.chore, "complaint_id": complaint_id})
+        record(
+            chore["household_id"],
+            session["user_id"],
+            "complaint.file",
+            {"chore_id": args.chore, "complaint_id": complaint_id},
+            conn=conn,
+        )
 
-    notify(chore["household_id"],
-           f"{session['username']} disputed '{chore['title']}'.",
-           exclude_user_id=session["user_id"])
+        notify(
+            chore["household_id"],
+            f"{session['username']} disputed '{chore['title']}'.",
+            exclude_user_id=session["user_id"],
+            conn=conn,
+        )
     print(f"Complaint filed (id={complaint_id}). An admin will review it.")
 
 
@@ -348,21 +416,34 @@ def cmd_resolve(args) -> None:
         note = input("Resolution note: ").strip()
     new_status = "pending" if args.outcome == "uphold" else "complete"
 
-    execute(
-        """UPDATE complaints
-           SET resolved = 1, resolution = ?, resolved_by = ?
-           WHERE id = ?""",
-        (note, session["user_id"], args.complaint)
-    )
-    execute("UPDATE chores SET status = ? WHERE id = ?",
-            (new_status, chore["id"]))
+    with transaction() as conn:
+        execute_tx(
+            conn,
+            """UPDATE complaints
+               SET resolved = 1, resolution = ?, resolved_by = ?
+               WHERE id = ?""",
+            (note, session["user_id"], args.complaint)
+        )
+        execute_tx(
+            conn,
+            "UPDATE chores SET status = ? WHERE id = ?",
+            (new_status, chore["id"]),
+        )
 
-    record(chore["household_id"], session["user_id"], "complaint.resolve",
-           {"complaint_id": args.complaint, "outcome": args.outcome})
+        record(
+            chore["household_id"],
+            session["user_id"],
+            "complaint.resolve",
+            {"complaint_id": args.complaint, "outcome": args.outcome},
+            conn=conn,
+        )
 
-    notify(chore["household_id"],
-           f"Complaint on '{chore['title']}' was {args.outcome} by {session['username']}.",
-           exclude_user_id=session["user_id"])
+        notify(
+            chore["household_id"],
+            f"Complaint on '{chore['title']}' was {args.outcome} by {session['username']}.",
+            exclude_user_id=session["user_id"],
+            conn=conn,
+        )
     print(f"Complaint {args.outcome}. Chore status is now '{new_status}'.")
 
 

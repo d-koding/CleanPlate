@@ -76,7 +76,11 @@ def _handle_response(response: dict, *, persist_session: bool = False, clear_loc
     if persist_session:
         session_data = response.get("session")
         if session_data:
-            save_session(session_data["user_id"], session_data["username"])
+            save_session(
+                session_data["user_id"],
+                session_data["username"],
+                session_token=session_data.get("session_token"),
+            )
     if clear_local_session:
         clear_session()
 
