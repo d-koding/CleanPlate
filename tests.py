@@ -81,6 +81,7 @@ class cleanplateTestCase(unittest.TestCase):
             {
                 "CLEANPLATE_AUDIT_HMAC_KEY": "hex:" + "11" * 32,
                 "CLEANPLATE_USERNAME_HMAC_KEY": "hex:" + "22" * 32,
+                "CLEANPLATE_SESSION_HMAC_KEY": "hex:" + "33" * 32,
             },
             clear=False,
         )
@@ -139,6 +140,7 @@ class TestSessionModule(cleanplateTestCase):
         self.assertEqual(loaded["user_id"], 7)
         self.assertEqual(loaded["username"], "alice")
         self.assertIn("expires_at", loaded)
+        self.assertIn("session_token", loaded)
         self.assertTrue(os.path.exists(self.session_path))
 
     def test_clear_session_removes_file(self):
@@ -254,6 +256,20 @@ class TestDatabaseInitialization(cleanplateTestCase):
             db.execute(
                 "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, ?)",
                 (9999, 9999, "roommate"),
+            )
+
+    def test_check_constraints_reject_invalid_policy_labels(self):
+        import sqlite3
+        user_id = self.create_user("labeltest")
+        household_id = db.execute(
+            "INSERT INTO households (name, invite_code) VALUES (?, ?)",
+            ("Label House", "labelhousecode"),
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, ?)",
+                (user_id, household_id, "superadmin"),
             )
 
 
@@ -657,6 +673,42 @@ class TestHouseholds(cleanplateTestCase):
         )
         self.assertIsNone(member)
 
+    def test_remove_member_cleans_up_chore_assignments(self):
+        household = self.create_household_as_alice("Cleanup House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household="Cleanup House",
+                title="Take out trash",
+                description="",
+                due=None,
+                assign=["bob"],
+            ),
+        )
+        chore = self.get_chore_by_title("Take out trash")
+        self.assertIsNotNone(chore)
+
+        self.capture_output(
+            households.cmd_remove_member,
+            Namespace(household="Cleanup House", username="bob"),
+        )
+
+        stale = db.query_one(
+            "SELECT * FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+            (chore["id"], self.bob_id),
+        )
+        refreshed = db.query_one("SELECT assigned_to FROM chores WHERE id = ?", (chore["id"],))
+        self.assertIsNone(stale)
+        self.assertIsNone(refreshed["assigned_to"])
+
     def test_roommate_can_leave_household(self):
         household = self.create_household_as_alice("Leave House")
 
@@ -677,6 +729,42 @@ class TestHouseholds(cleanplateTestCase):
             (self.bob_id, household["id"]),
         )
         self.assertIsNone(member)
+
+    def test_leave_household_cleans_up_chore_assignments(self):
+        household = self.create_household_as_alice("Leave Cleanup House")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=household["invite_code"]),
+        )
+
+        self.login_as("alice")
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(
+                household="Leave Cleanup House",
+                title="Kitchen mop",
+                description="",
+                due=None,
+                assign=["bob"],
+            ),
+        )
+        chore = self.get_chore_by_title("Kitchen mop")
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Leave Cleanup House"),
+        )
+
+        stale = db.query_one(
+            "SELECT * FROM chore_assignees WHERE chore_id = ? AND user_id = ?",
+            (chore["id"], self.bob_id),
+        )
+        refreshed = db.query_one("SELECT assigned_to FROM chores WHERE id = ?", (chore["id"],))
+        self.assertIsNone(stale)
+        self.assertIsNone(refreshed["assigned_to"])
 
     def test_sole_admin_leave_promotes_next_joined_roommate(self):
         household = self.create_household_as_alice("Succession Leave House")
@@ -1844,24 +1932,58 @@ class TestClientServerArchitecture(cleanplateTestCase):
         self.assertIn("name cannot be empty", create_household["output"].lower())
 
     def test_server_dispatch_is_safe_for_simultaneous_sessions(self):
-        self.create_user("alice")
-        self.create_user("bob")
+        _, register_alice = api_server.invoke_command(
+            "register",
+            {
+                "username": "alice",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+                "email": "alice@test.com",
+            },
+            None,
+        )
+        _, register_bob = api_server.invoke_command(
+            "register",
+            {
+                "username": "bob",
+                "password": "GoodPass!123",
+                "confirm_password": "GoodPass!123",
+                "email": "bob@test.com",
+            },
+            None,
+        )
+        self.assertTrue(register_alice["ok"])
+        self.assertTrue(register_bob["ok"])
+        db.execute("UPDATE users SET email_verified = 1 WHERE display_name IN ('alice', 'bob')")
+
+        _, alice_login = api_server.invoke_command(
+            "login",
+            {"username": "alice", "password": "GoodPass!123"},
+            None,
+        )
+        _, bob_login = api_server.invoke_command(
+            "login",
+            {"username": "bob", "password": "GoodPass!123"},
+            None,
+        )
+        self.assertTrue(alice_login["ok"])
+        self.assertTrue(bob_login["ok"])
 
         barrier = threading.Barrier(2)
         outputs: dict[str, dict] = {}
 
-        def worker(name: str):
+        def worker(name: str, sess: dict):
             barrier.wait()
             _, response = api_server.invoke_command(
                 "whoami",
                 {},
-                {"user_id": 1 if name == "alice" else 2, "username": name},
+                sess,
             )
             outputs[name] = response
 
         threads = [
-            threading.Thread(target=worker, args=("alice",)),
-            threading.Thread(target=worker, args=("bob",)),
+            threading.Thread(target=worker, args=("alice", alice_login["session"])),
+            threading.Thread(target=worker, args=("bob", bob_login["session"])),
         ]
         for thread in threads:
             thread.start()
@@ -1872,6 +1994,16 @@ class TestClientServerArchitecture(cleanplateTestCase):
         self.assertIn("Logged in as: bob", outputs["bob"]["output"])
         self.assertNotIn("bob", outputs["alice"]["output"])
         self.assertNotIn("alice", outputs["bob"]["output"])
+
+    def test_server_dispatch_rejects_forged_session_identity(self):
+        self.create_user("alice")
+        _, response = api_server.invoke_command(
+            "household.list",
+            {},
+            {"user_id": 9999, "username": "alice", "expires_at": "2999-01-01T00:00:00+00:00"},
+        )
+        self.assertFalse(response["ok"])
+        self.assertIn("session is missing", response["output"].lower())
 
 
 class TestTlsTransport(cleanplateTestCase):
