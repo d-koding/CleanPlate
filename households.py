@@ -126,6 +126,26 @@ def _user_has_household_named(user_id: int, household_name: str) -> bool:
     return row is not None
 
 
+def _member_with_name_conflict(household_id: int, new_name: str) -> sqlite3.Row | None:
+    return query_one(
+        """SELECT u.display_name
+           FROM members m
+           JOIN users u ON u.id = m.user_id
+           WHERE m.household_id = ?
+             AND EXISTS (
+                 SELECT 1
+                 FROM members other_m
+                 JOIN households other_h ON other_h.id = other_m.household_id
+                 WHERE other_m.user_id = m.user_id
+                   AND other_m.household_id != ?
+                   AND other_h.name = ?
+             )
+           ORDER BY m.joined_at ASC, m.id ASC
+           LIMIT 1""",
+        (household_id, household_id, new_name),
+    )
+
+
 def _delete_household_if_empty(household_id: int) -> bool:
     if _count_members(household_id) != 0:
         return False
@@ -211,6 +231,7 @@ def cmd_join_household(args) -> None:
         return
     if _user_has_household_named(session["user_id"], row["name"]):
         print(f"Error: you already belong to a household named '{row['name']}'.")
+        print("Ask an admin of one of those households to rename it before joining.")
         return
 
     execute(
@@ -276,6 +297,61 @@ def cmd_rotate_invite(args) -> None:
 
     print(f"New invite code: {new_code}")
     print("The previous invite code is now invalid.")
+
+
+def cmd_rename_household(args) -> None:
+    """
+    Rename a household (admin only).
+    Usage: python main.py household rename --household "Old Name" --name "New Name"
+           python main.py rename-household "Old Name" "New Name"
+    """
+    session = require_session()
+    household_ref = getattr(args, "household", getattr(args, "id", None))
+    household_id = _resolve_household_id(session, household_ref)
+    if household_id is None:
+        return
+    require_admin(session["user_id"], household_id)
+
+    new_name = getattr(args, "name", None)
+    if new_name is None:
+        new_name = input("New household name: ").strip()
+    else:
+        new_name = new_name.strip()
+    if not new_name:
+        print("Error: name cannot be empty.")
+        return
+    if len(new_name) > 64:
+        print("Error: household name must be 64 characters or fewer.")
+        return
+    if any(ord(c) < 32 for c in new_name):
+        print("Error: household name must not contain control characters.")
+        return
+
+    current = query_one("SELECT name FROM households WHERE id = ?", (household_id,))
+    old_name = current["name"]
+    if new_name == old_name:
+        print(f"Household is already named '{new_name}'.")
+        return
+
+    conflict = _member_with_name_conflict(household_id, new_name)
+    if conflict is not None:
+        print(
+            f"Error: cannot rename household to '{new_name}' because "
+            f"'{conflict['display_name']}' already belongs to another household with that name."
+        )
+        return
+
+    execute("UPDATE households SET name = ? WHERE id = ?", (new_name, household_id))
+
+    from activity import record
+    record(
+        household_id,
+        session["user_id"],
+        "household.rename",
+        {"old_name": old_name, "new_name": new_name},
+    )
+
+    print(f"Household '{old_name}' renamed to '{new_name}'.")
 
 
 def cmd_remove_member(args) -> None:
@@ -606,6 +682,12 @@ def register_subparsers(subparsers) -> None:
     c = sub.add_parser("rotate-invite", help="Generate a new invite code (admin)")
     c.add_argument("--household", "--id", dest="household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_rotate_invite)
+
+    # rename
+    c = sub.add_parser("rename", help="Rename a household (admin only)")
+    c.add_argument("--household", "--id", dest="household", default=None, metavar="HOUSEHOLD_NAME")
+    c.add_argument("--name", default=None, metavar="NEW_NAME")
+    c.set_defaults(func=cmd_rename_household)
 
     # remove-member
     c = sub.add_parser("remove-member", help="Remove a member (admin)")

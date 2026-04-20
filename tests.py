@@ -580,6 +580,42 @@ class TestHouseholds(cleanplateTestCase):
         )
         self.assertIn("invalid invite code", out.lower())
 
+    def test_admin_can_rename_household(self):
+        household = self.create_household_as_alice("Anj House")
+
+        out = self.capture_output(
+            households.cmd_rename_household,
+            Namespace(household="Anj House", name="Anj and Liam House"),
+        )
+
+        self.assertIn("renamed to 'Anj and Liam House'", out)
+        renamed = db.query_one("SELECT * FROM households WHERE id = ?", (household["id"],))
+        self.assertEqual(renamed["name"], "Anj and Liam House")
+        audit = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (household["id"], "household.rename"),
+        )
+        self.assertIsNotNone(audit)
+
+    def test_rename_household_rejects_name_conflict_for_existing_member(self):
+        self.create_household_as_alice("Anj House")
+
+        self.login_as("bob")
+        self.capture_output(households.cmd_create_household, Namespace(name="Liam House"))
+        liam_house = self.get_household_by_name("Liam House")
+
+        self.login_as("alice")
+        self.capture_output(households.cmd_join_household, Namespace(code=liam_house["invite_code"]))
+
+        self.login_as("bob")
+        out = self.capture_output(
+            households.cmd_rename_household,
+            Namespace(household="Liam House", name="Anj House"),
+        )
+
+        self.assertIn("cannot rename", out.lower())
+        self.assertIn("alice", out)
+
     def test_remove_member_by_admin(self):
         household = self.create_household_as_alice("Pine House")
 
@@ -852,6 +888,7 @@ class TestHouseholds(cleanplateTestCase):
             Namespace(code=second["invite_code"]),
         )
         self.assertIn("already belong to a household", out.lower())
+        self.assertIn("rename", out.lower())
 
     def test_user_can_belong_to_multiple_households(self):
         first = self.create_household_as_alice("Clover House")
@@ -1461,6 +1498,23 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.name, "Demo")
         self.assertTrue(callable(args.func))
 
+    def test_build_command_parser_parses_nested_household_rename_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args([
+            "household",
+            "rename",
+            "--household",
+            "Anj House",
+            "--name",
+            "Anj and Liam House",
+        ])
+
+        self.assertEqual(args.command, "household")
+        self.assertEqual(args.household_cmd, "rename")
+        self.assertEqual(args.household, "Anj House")
+        self.assertEqual(args.name, "Anj and Liam House")
+        self.assertTrue(callable(args.func))
+
     def test_build_command_parser_parses_nested_activity_command(self):
         parser = main.build_command_parser()
         args = parser.parse_args(["activity", "complete", "--chore", "4"])
@@ -1502,6 +1556,12 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(
             main._normalize_interactive_argv(["household", "show", "Maple House"]),
             ["household", "show", "--household", "Maple House"],
+        )
+
+    def test_normalize_interactive_argv_supports_household_rename_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["household", "rename", "Anj House", "Anj and Liam House"]),
+            ["household", "rename", "--household", "Anj House", "--name", "Anj and Liam House"],
         )
 
     def test_normalize_interactive_argv_supports_household_promote_shorthand(self):

@@ -38,6 +38,7 @@ COMMANDS = {
     "household.list": households.cmd_list_households,
     "household.leave": households.cmd_leave_household,
     "household.rotate-invite": households.cmd_rotate_invite,
+    "household.rename": households.cmd_rename_household,
     "chore.reschedule": chores.cmd_reschedule_chore,
     "household.remove-member": households.cmd_remove_member,
     "household.promote": households.cmd_promote_member,
