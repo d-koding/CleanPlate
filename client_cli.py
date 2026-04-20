@@ -267,6 +267,12 @@ def cmd_rotate_invite(args) -> None:
     _remote_command("household.rotate-invite", {"household": household_name})
 
 
+def cmd_rename_household(args) -> None:
+    household_name = _arg(args, "household", "household_pos")
+    new_name = _arg(args, "name", "name_pos") or _prompt_text("New household name: ")
+    _remote_command("household.rename", {"household": household_name, "name": new_name})
+
+
 def cmd_remove_member(args) -> None:
     household_name = args.household if args.household is not None else _prompt_text("Household name: ")
     username = args.username or _prompt_text("Username to remove: ")
@@ -461,6 +467,14 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.set_defaults(func=cmd_rotate_invite)
 
+    c = sub.add_parser("rename", help="Rename a household (admin only)")
+    c.add_argument("household_pos", nargs="?", metavar="HOUSEHOLD_NAME")
+    c.add_argument("name_pos", nargs="?", metavar="NEW_NAME")
+    c.add_argument("--household", dest="household", default=None, metavar="HOUSEHOLD_NAME")
+    c.add_argument("--name", dest="name", default=None, metavar="NEW_NAME")
+    c.set_defaults(household=None, name=None)
+    c.set_defaults(func=cmd_rename_household)
+
     c = sub.add_parser("remove-member", help="Remove a member (admin)")
     c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
     c.add_argument("--username", default=None)
@@ -561,6 +575,14 @@ def register_subparsers(subparsers) -> None:
     p = subparsers.add_parser("leave-household", help="Leave a household with a flat command")
     p.add_argument("household", nargs="?", metavar="HOUSEHOLD_NAME")
     p.set_defaults(func=cmd_leave_household)
+
+    p = subparsers.add_parser("rename-household", help="Rename a household with a flat command")
+    p.add_argument("household_pos", nargs="?", metavar="HOUSEHOLD_NAME")
+    p.add_argument("name_pos", nargs="?", metavar="NEW_NAME")
+    p.add_argument("--household", dest="household", default=None, metavar="HOUSEHOLD_NAME")
+    p.add_argument("--name", dest="name", default=None, metavar="NEW_NAME")
+    p.set_defaults(household=None, name=None)
+    p.set_defaults(func=cmd_rename_household)
 
     p = subparsers.add_parser("promote", help="Promote a roommate to admin")
     p.add_argument("username", metavar="USERNAME")
