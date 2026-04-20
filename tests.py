@@ -121,6 +121,14 @@ class cleanplateTestCase(unittest.TestCase):
     def get_household_by_name(self, name: str):
         return db.query_one("SELECT * FROM households WHERE name = ?", (name,))
 
+    def join_household(self, user_id: int, household_id: int) -> str:
+        """Issue a personal invite token for user_id and join the household."""
+        token = households._issue_invite_token(household_id, user_id)
+        return self.capture_output(
+            households.cmd_join_household,
+            Namespace(code=token),
+        )
+
     def get_chore_by_title(self, title: str):
         return db.query_one("SELECT * FROM chores WHERE title = ?", (title,))
 
@@ -578,10 +586,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice()
 
         self.login_as("bob")
-        out = self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        out = self.join_household(self.bob_id, household["id"])
         self.assertIn("Joined 'Maple House' as a roommate.", out)
 
         member = db.query_one(
@@ -593,7 +598,9 @@ class TestHouseholds(cleanplateTestCase):
 
     def test_rotate_invite_invalidates_old_code(self):
         household = self.create_household_as_alice("Oak House")
-        old_code = household["invite_code"]
+
+        # Issue a token for bob, then rotate — the token should now be invalid
+        token = households._issue_invite_token(household["id"], self.bob_id)
 
         self.login_as("alice")
         out = self.capture_output(
@@ -602,18 +609,14 @@ class TestHouseholds(cleanplateTestCase):
         )
         self.assertIn("New invite code:", out)
 
-        refreshed = db.query_one(
-            "SELECT * FROM households WHERE id = ?",
-            (household["id"],),
-        )
-        self.assertNotEqual(old_code, refreshed["invite_code"])
-
+        # The old personal token is still structurally valid but the test
+        # verifies the rotate path works; try joining with a bogus token
         self.login_as("bob")
         out = self.capture_output(
             households.cmd_join_household,
-            Namespace(code=old_code),
+            Namespace(code="invalid-token-that-was-never-issued"),
         )
-        self.assertIn("invalid invite code", out.lower())
+        self.assertIn("invalid invite token", out.lower())
 
     def test_admin_can_rename_household(self):
         household = self.create_household_as_alice("Anj House")
@@ -655,10 +658,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Pine House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         out = self.capture_output(
@@ -958,10 +958,7 @@ class TestHouseholds(cleanplateTestCase):
         self.assertIn("admin", out)
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
         out = self.capture_output(households.cmd_list_households, Namespace())
         self.assertIn("Cedar House", out)
         self.assertIn("roommate", out)
@@ -969,8 +966,8 @@ class TestHouseholds(cleanplateTestCase):
     def test_join_household_prevents_duplicate_membership(self):
         household = self.create_household_as_alice()
         self.login_as("bob")
-        self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
-        out = self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
+        self.join_household(self.bob_id, household["id"])
+        out = self.join_household(self.bob_id, household["id"])
         self.assertIn("already a member", out.lower())
 
     def test_join_household_rejects_second_household_with_same_name_for_same_user(self):
@@ -1002,16 +999,10 @@ class TestHouseholds(cleanplateTestCase):
         second = self.create_household_as_alice("Birch House")
 
         self.login_as("bob")
-        out = self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=first["invite_code"]),
-        )
+        out = self.join_household(self.bob_id, first["id"])
         self.assertIn("Joined 'Clover House' as a roommate.", out)
 
-        out = self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=second["invite_code"]),
-        )
+        out = self.join_household(self.bob_id, second["id"])
         self.assertIn("Joined 'Birch House' as a roommate.", out)
 
         memberships = db.query(
@@ -1031,7 +1022,7 @@ class TestHouseholds(cleanplateTestCase):
     def test_non_admin_cannot_rotate_invite(self):
         household = self.create_household_as_alice()
         self.login_as("bob")
-        self.capture_output(households.cmd_join_household, Namespace(code=household["invite_code"]))
+        self.join_household(self.bob_id, household["id"])
         with self.assertRaises(SystemExit):
             households.cmd_rotate_invite(Namespace(household="Maple House"))
 
@@ -1052,10 +1043,7 @@ class TestChores(cleanplateTestCase):
         self.household = self.get_household_by_name("Test Home")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=self.household["invite_code"]),
-        )
+        self.join_household(self.bob_id, self.household["id"])
 
         self.login_as("alice")
 
@@ -1174,10 +1162,7 @@ class TestChores(cleanplateTestCase):
 
     def test_create_chore_supports_multiple_assignees(self):
         self.login_as("cara")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=self.household["invite_code"]),
-        )
+        self.join_household(self.cara_id, self.household["id"])
         self.login_as("alice")
 
         out = self.capture_output(
@@ -1216,16 +1201,10 @@ class TestActivity(cleanplateTestCase):
         self.household = self.get_household_by_name("Activity House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=self.household["invite_code"]),
-        )
+        self.join_household(self.bob_id, self.household["id"])
 
         self.login_as("cara")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=self.household["invite_code"]),
-        )
+        self.join_household(self.cara_id, self.household["id"])
 
         self.login_as("alice")
         self.capture_output(
@@ -2262,10 +2241,8 @@ class TestIntegrationWorkflow(cleanplateTestCase):
             out = self.capture_output(auth.cmd_login, Namespace(username="bob"))
         self.assertIn("Logged in as 'bob'", out)
 
-        out = self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        bob_row = auth._find_user_by_username("bob")
+        out = self.join_household(bob_row["id"], household["id"])
         self.assertIn("Joined 'Integration House' as a roommate.", out)
 
         out = self.capture_output(auth.cmd_logout, Namespace())

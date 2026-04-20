@@ -12,6 +12,7 @@ Responsibilities:
 Standard library only: secrets
 """
 
+import hashlib
 import secrets
 import sqlite3
 
@@ -28,8 +29,24 @@ def _new_invite_code() -> str:
     return secrets.token_hex(8)
 
 
-def _normalize_household_name(name: str) -> str:
-    return name.strip()
+def _hash_invite_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _issue_invite_token(household_id: int, target_user_id: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    token = secrets.token_urlsafe(24)
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    execute(
+        "UPDATE household_invites SET used = 1 WHERE household_id = ? AND target_user_id = ? AND used = 0",
+        (household_id, target_user_id),
+    )
+    execute(
+        """INSERT INTO household_invites (household_id, target_user_id, token_hash, expires_at)
+           VALUES (?, ?, ?, ?)""",
+        (household_id, target_user_id, _hash_invite_token(token), expires_at),
+    )
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -263,27 +280,43 @@ def cmd_create_household(args) -> None:
     from activity import record
     record(household_id, session["user_id"], "household.create", {"name": name})
 
-    print(f"Household '{name}' created.")
-    print(f"Invite code: {invite_code}")
-    print("Share this code with your roommates so they can join.")
+    print(f"Household '{name}' created (id={household_id}).")
+    print("Use 'household send-invite' to invite roommates by username or email.")
 
 
 def cmd_join_household(args) -> None:
     """
-    Join a household using its invite code.
-    Usage: python main.py household join --code <invite_code>
+    Join a household using a personal invite token.
+    Usage: python main.py household join --code <token>
     """
+    from datetime import datetime, timezone
     session = require_session()
-    code = args.code or input("Invite code: ").strip()
+    code = args.code or input("Invite token: ").strip()
 
-    row = query_one("SELECT * FROM households WHERE invite_code = ?", (code,))
-    if row is None:
-        print("Error: invalid invite code.")
+    token_row = query_one(
+        """SELECT hi.id, hi.household_id, hi.expires_at, h.name
+           FROM household_invites hi
+           JOIN households h ON h.id = hi.household_id
+           WHERE hi.target_user_id = ? AND hi.used = 0
+             AND hi.token_hash = ?""",
+        (session["user_id"], _hash_invite_token(code)),
+    )
+
+    if token_row is None:
+        print("Error: invalid invite token.")
         return
 
-    existing = get_membership(session["user_id"], row["id"])
+    if datetime.fromisoformat(token_row["expires_at"]) <= datetime.now(timezone.utc):
+        execute("UPDATE household_invites SET used = 1 WHERE id = ?", (token_row["id"],))
+        print("Error: invite token has expired. Ask an admin to send a new invite.")
+        return
+
+    household_id = token_row["household_id"]
+
+    existing = get_membership(session["user_id"], household_id)
     if existing:
-        print(f"You are already a member of '{row['name']}'.")
+        execute("UPDATE household_invites SET used = 1 WHERE id = ?", (token_row["id"],))
+        print(f"You are already a member of '{token_row['name']}'.")
         return
     if _user_has_household_named(session["user_id"], row["name"]):
         print(f"Error: you already belong to a household named '{row['name']}'.")
@@ -292,14 +325,15 @@ def cmd_join_household(args) -> None:
 
     execute(
         "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, 'roommate')",
-        (session["user_id"], row["id"])
+        (session["user_id"], household_id)
     )
+    execute("UPDATE household_invites SET used = 1 WHERE id = ?", (token_row["id"],))
 
     from activity import record
-    record(row["id"], session["user_id"], "membership.join",
+    record(household_id, session["user_id"], "membership.join",
            {"username": session["username"]})
 
-    print(f"Joined '{row['name']}' as a roommate.")
+    print(f"Joined '{token_row['name']}' as a roommate.")
 
 
 def cmd_show_household(args) -> None:
@@ -315,9 +349,7 @@ def cmd_show_household(args) -> None:
     membership = require_membership(session["user_id"], household_id)
     row = query_one("SELECT * FROM households WHERE id = ?", (household_id,))
 
-    print(f"\n=== {row['name']} ===")
-    if membership["role"] == "admin":
-        print(f"Invite code : {row['invite_code']}")
+    print(f"\n=== {row['name']} (id={row['id']}) ===")
     print(f"Created     : {row['created_at']}")
 
     members = query(
@@ -556,15 +588,28 @@ def cmd_send_invite(args) -> None:
         print("Error: household not found.")
         return
 
+    # Resolve target user — needed for the user-specific token
+    if "@" not in recipient:
+        target_user = _find_user_by_username(recipient)
+    else:
+        target_user = query_one(
+            "SELECT id FROM users WHERE email = ?", (email,)
+        )
+    if not target_user:
+        print(f"Error: no CleanPlate account found for '{recipient}'. They must register first.")
+        return
+
+    token = _issue_invite_token(household_id, target_user["id"])
+
     subject = f"You're invited to join '{row['name']}' on CleanPlate"
     body = (
         f"Hi,\n\n"
         f"You've been invited to join the '{row['name']}' household on CleanPlate.\n\n"
-        f"Use this invite code to join:\n\n"
-        f"    {row['invite_code']}\n\n"
+        f"Your personal invite token is:\n\n"
+        f"    {token}\n\n"
         f"Run this command to join:\n\n"
-        f"    join-household {row['invite_code']}\n\n"
-        f"Welcome aboard!\n"
+        f"    household join --code {token}\n\n"
+        f"This token is valid for 5 minutes and can only be used by your account.\n"
     )
 
     try:
@@ -590,7 +635,7 @@ def _resolve_household_id(session: dict, given_id: int | str | None) -> int | No
     if given_id is not None:
         if isinstance(given_id, int):
             return given_id
-        given_name = _normalize_household_name(str(given_id))
+        given_name = str(given_id).strip()
         row = query_one(
             """SELECT h.id
                FROM members m

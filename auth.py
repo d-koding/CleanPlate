@@ -340,14 +340,14 @@ def _send_verification_email(email: str, code: str) -> None:
         f"    {code}\n\n"
         f"Enter it with:\n\n"
         f"    verify {code}\n\n"
-        f"This code expires in 24 hours.\n"
+        f"This code expires in 5 minutes.\n"
     )
     _send_email(email, "Verify your CleanPlate account", body)
 
 
 def _issue_verification_code(user_id: int) -> str:
     code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
-    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     execute(
         """INSERT INTO email_verifications (user_id, code, expires_at)
            VALUES (?, ?, ?)
@@ -739,7 +739,7 @@ def cmd_forgot_password(args) -> None:
         return
 
     token = secrets.token_urlsafe(24)
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
 
     try:
         execute(
@@ -763,7 +763,7 @@ def cmd_forgot_password(args) -> None:
         f"    {token}\n\n"
         f"Run this command to reset your password:\n\n"
         f"    recover-password {username} {token}\n\n"
-        f"This token expires in 15 minutes. If you did not request this, ignore this email.\n"
+        f"This token expires in 5 minutes. If you did not request this, ignore this email.\n"
     )
     try:
         _send_email(email, "CleanPlate password reset", body)
