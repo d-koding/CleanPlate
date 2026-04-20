@@ -76,6 +76,7 @@ Quick Start
 # Terminal 1
 export CLEANPLATE_AUDIT_HMAC_KEY='replace-with-a-long-random-secret'
 export CLEANPLATE_USERNAME_HMAC_KEY='replace-with-a-second-long-random-secret'
+export CLEANPLATE_SESSION_HMAC_KEY='replace-with-a-third-long-random-secret'
 python3 main.py serve
 
 # Terminal 2
@@ -382,6 +383,9 @@ Sessions:
 
 - stored locally on the client side
 - expire automatically after the configured TTL in `session.py`
+- server trusts only signed session tokens, not client-supplied identity fields
+- signing key must come from `CLEANPLATE_SESSION_HMAC_KEY`
+- `SESSION_HMAC_KEY` is also accepted for compatibility
 - cleared on logout
 
 Authorization:
