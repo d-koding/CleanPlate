@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import errno
 import json
+import os
+import ssl
 from argparse import Namespace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +19,7 @@ import activity
 import auth
 import chores
 import households
+from config import get_bool, get_int, get_option, resolve_path
 from db import init_db
 from output_capture import capture_stdout
 from session import load_session, session_scope
@@ -146,18 +149,74 @@ class CleanPlateThreadingServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def make_server(host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
+def _wrap_server_socket_for_tls(
+    server: ThreadingHTTPServer,
+    *,
+    certfile: str,
+    keyfile: str,
+) -> ThreadingHTTPServer:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    if hasattr(ssl, "TLSVersion"):
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+    if hasattr(context, "set_alpn_protocols"):
+        context.set_alpn_protocols(["http/1.1"])
+    if hasattr(ssl, "OP_NO_COMPRESSION") and hasattr(context, "options"):
+        context.options |= ssl.OP_NO_COMPRESSION
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    return server
+
+
+def make_server(
+    host: str = "127.0.0.1",
+    port: int = 8443,
+    *,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    allow_insecure_http: bool = False,
+) -> ThreadingHTTPServer:
     init_db()
-    return CleanPlateThreadingServer((host, port), CleanPlateHandler)
+    if (tls_cert is None) != (tls_key is None):
+        raise ValueError("Both tls_cert and tls_key must be provided together.")
+    if not allow_insecure_http and not (tls_cert and tls_key):
+        raise ValueError("TLS certificate and key are required unless allow_insecure_http is enabled.")
+
+    server = CleanPlateThreadingServer((host, port), CleanPlateHandler)
+    if tls_cert and tls_key:
+        return _wrap_server_socket_for_tls(server, certfile=tls_cert, keyfile=tls_key)
+    return server
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
+def run_server(
+    host: str | None = None,
+    port: int | None = None,
+    *,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    allow_insecure_http: bool = False,
+) -> None:
+    host = host or get_option("server", "host", "127.0.0.1")
+    port = port or get_int("server", "port", 8443)
+    tls_cert = tls_cert or os.environ.get("CLEANPLATE_TLS_CERT") or resolve_path(get_option("server", "tls_cert", None))
+    tls_key = tls_key or os.environ.get("CLEANPLATE_TLS_KEY") or resolve_path(get_option("server", "tls_key", None))
+    allow_insecure_http = allow_insecure_http or get_bool("server", "allow_insecure_http", False)
     try:
-        server = make_server(host, port)
+        server = make_server(
+            host,
+            port,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+            allow_insecure_http=allow_insecure_http,
+        )
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
-            print(f"Error: a CleanPlate server is already running on http://{host}:{port}")
+            scheme = "https" if tls_cert and tls_key else "http"
+            print(f"Error: a CleanPlate server is already running on {scheme}://{host}:{port}")
             return
         raise
-    print(f"CleanPlate server listening on http://{host}:{port}")
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return
+    scheme = "https" if tls_cert and tls_key else "http"
+    print(f"CleanPlate server listening on {scheme}://{host}:{port}")
     server.serve_forever()

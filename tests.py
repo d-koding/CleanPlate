@@ -30,12 +30,15 @@ import importlib
 import io
 import json
 import os
+import ssl
 import sys
 import tempfile
 import threading
+import urllib.error
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -58,6 +61,8 @@ chores = importlib.import_module("chores")
 main = importlib.import_module("main")
 api_server = importlib.import_module("api_server")
 client_cli = importlib.import_module("client_cli")
+api_client = importlib.import_module("api_client")
+config = importlib.import_module("config")
 
 
 # ---------------------------------------------------------------------------
@@ -1470,21 +1475,31 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.port, 9000)
         self.assertTrue(callable(args.func))
 
-    def test_build_parser_parses_flat_promote_with_household_name(self):
+    def test_build_parser_parses_tls_serve_options(self):
         parser = main.build_parser()
-        args = parser.parse_args(["promote", "nat", "--household", "Role House 2"])
+        args = parser.parse_args(
+            ["serve", "--tls-cert", "server.pem", "--tls-key", "server.key"]
+        )
 
-        self.assertEqual(args.command, "promote")
-        self.assertEqual(args.username, "nat")
-        self.assertEqual(args.household, "Role House 2")
+        self.assertEqual(args.command, "serve")
+        self.assertEqual(args.tls_cert, "server.pem")
+        self.assertEqual(args.tls_key, "server.key")
         self.assertTrue(callable(args.func))
 
-    def test_build_parser_parses_flat_leave_household(self):
+    def test_build_parser_uses_configured_tls_defaults(self):
         parser = main.build_parser()
-        args = parser.parse_args(["leave-household", "Role House 2"])
+        args = parser.parse_args(["serve"])
 
-        self.assertEqual(args.command, "leave-household")
-        self.assertEqual(args.household, "Role House 2")
+        self.assertEqual(args.port, 8443)
+        self.assertTrue(args.tls_cert.endswith("server.pem"))
+        self.assertTrue(args.tls_key.endswith("server.key"))
+
+    def test_build_parser_parses_insecure_http_flag(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["serve", "--insecure-http"])
+
+        self.assertEqual(args.command, "serve")
+        self.assertTrue(args.insecure_http)
         self.assertTrue(callable(args.func))
 
     def test_build_parser_rejects_direct_client_command(self):
@@ -1506,7 +1521,12 @@ class TestMainParser(cleanplateTestCase):
 
         self.assertEqual(args.command, "reset-password")
         self.assertEqual(args.username, "alice")
-        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_rejects_removed_flat_aliases(self):
+        parser = main.build_command_parser()
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["create-household", "Demo"])
 
     def test_build_command_parser_parses_nested_household_command(self):
         parser = main.build_command_parser()
@@ -1852,6 +1872,222 @@ class TestClientServerArchitecture(cleanplateTestCase):
         self.assertIn("Logged in as: bob", outputs["bob"]["output"])
         self.assertNotIn("bob", outputs["alice"]["output"])
         self.assertNotIn("alice", outputs["bob"]["output"])
+
+
+class TestTlsTransport(cleanplateTestCase):
+    def test_config_resolve_path_uses_repo_relative_paths(self):
+        resolved = config.resolve_path("server.pem")
+        self.assertTrue(resolved.endswith("server.pem"))
+        self.assertTrue(os.path.isabs(resolved))
+
+    def test_load_env_file_populates_missing_cert_env_vars(self):
+        env_path = Path(self.tempdir.name) / ".env"
+        env_path.write_text(
+            "\n".join(
+                [
+                    "CLEANPLATE_SERVER_URL=https://localhost:9443",
+                    "CLEANPLATE_CA_CERT=./server.pem",
+                    "CLEANPLATE_TLS_CERT=./server.pem",
+                    "CLEANPLATE_TLS_KEY=./server.key",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            config.load_env_file(env_path)
+
+            self.assertEqual(os.environ["CLEANPLATE_SERVER_URL"], "https://localhost:9443")
+            self.assertEqual(os.environ["CLEANPLATE_CA_CERT"], "./server.pem")
+            self.assertEqual(os.environ["CLEANPLATE_TLS_CERT"], "./server.pem")
+            self.assertEqual(os.environ["CLEANPLATE_TLS_KEY"], "./server.key")
+
+    def test_load_env_file_does_not_override_existing_env(self):
+        env_path = Path(self.tempdir.name) / ".env"
+        env_path.write_text("CLEANPLATE_SERVER_URL=https://localhost:9443\n", encoding="utf-8")
+
+        with patch.dict("os.environ", {"CLEANPLATE_SERVER_URL": "https://127.0.0.1:8443"}, clear=True):
+            config.load_env_file(env_path)
+            self.assertEqual(os.environ["CLEANPLATE_SERVER_URL"], "https://127.0.0.1:8443")
+
+    def test_get_server_url_uses_config_file_default(self):
+        config_path = Path(self.tempdir.name) / "cleanplate.ini"
+        config_path.write_text("[client]\nserver_url = https://cleanplate.local:9443\n", encoding="utf-8")
+
+        with patch.dict("os.environ", {"CLEANPLATE_CONFIG": str(config_path)}, clear=False):
+            self.assertEqual(
+                api_client.get_server_url(),
+                "https://cleanplate.local:9443",
+            )
+
+    def test_build_ssl_context_returns_none_for_http(self):
+        self.assertIsNone(api_client._build_ssl_context("http://127.0.0.1:8000"))
+
+    def test_build_ssl_context_uses_ca_cert_for_https(self):
+        created = []
+
+        class FakeContext:
+            def __init__(self):
+                self.minimum_version = None
+
+        def fake_create_default_context(*, cafile=None):
+            created.append(cafile)
+            return FakeContext()
+
+        with patch("api_client.ssl.create_default_context", side_effect=fake_create_default_context):
+            with patch.dict("os.environ", {"CLEANPLATE_CA_CERT": "/tmp/ca.pem"}, clear=False):
+                context = api_client._build_ssl_context("https://cleanplate.local:8443")
+
+        self.assertIsNotNone(context)
+        self.assertEqual(created, ["/tmp/ca.pem"])
+
+    def test_build_ssl_context_uses_configured_ca_cert_when_env_missing(self):
+        config_path = Path(self.tempdir.name) / "cleanplate.ini"
+        ca_path = Path(self.tempdir.name) / "dev-ca.pem"
+        ca_path.write_text("test cert", encoding="utf-8")
+        config_path.write_text("[client]\nca_cert = dev-ca.pem\n", encoding="utf-8")
+
+        created = []
+
+        class FakeContext:
+            def __init__(self):
+                self.minimum_version = None
+
+        def fake_create_default_context(*, cafile=None):
+            created.append(cafile)
+            return FakeContext()
+
+        with patch.dict("os.environ", {"CLEANPLATE_CONFIG": str(config_path)}, clear=False):
+            with patch("api_client.ssl.create_default_context", side_effect=fake_create_default_context):
+                context = api_client._build_ssl_context("https://cleanplate.local:8443")
+
+        self.assertIsNotNone(context)
+        self.assertEqual(created, [str(ca_path.resolve())])
+
+    def test_invoke_rejects_insecure_http_by_default(self):
+        with patch("api_client.get_server_url", return_value="http://127.0.0.1:8000"):
+            with self.assertRaises(api_client.ClientError) as ctx:
+                api_client.invoke("whoami", {}, None)
+
+        self.assertIn("Refusing insecure HTTP transport", str(ctx.exception))
+
+    def test_invoke_surfaces_certificate_verification_errors_wrapped_in_urlerror(self):
+        cert_error = ssl.SSLCertVerificationError(
+            1,
+            "certificate verify failed: IP address mismatch",
+        )
+
+        with patch("api_client.get_server_url", return_value="https://127.0.0.1:8443"):
+            with patch("api_client._build_ssl_context", return_value=object()):
+                with patch(
+                    "api_client.urllib.request.urlopen",
+                    side_effect=urllib.error.URLError(cert_error),
+                ):
+                    with self.assertRaises(api_client.ClientError) as ctx:
+                        api_client.invoke("whoami", {}, None)
+
+        self.assertIn("TLS certificate validation failed", str(ctx.exception))
+
+    def test_invoke_surfaces_tls_errors_wrapped_in_urlerror(self):
+        tls_error = ssl.SSLError("wrong version number")
+
+        with patch("api_client.get_server_url", return_value="https://127.0.0.1:8443"):
+            with patch("api_client._build_ssl_context", return_value=object()):
+                with patch(
+                    "api_client.urllib.request.urlopen",
+                    side_effect=urllib.error.URLError(tls_error),
+                ):
+                    with self.assertRaises(api_client.ClientError) as ctx:
+                        api_client.invoke("whoami", {}, None)
+
+        self.assertIn("TLS error while connecting", str(ctx.exception))
+
+    def test_make_server_requires_cert_and_key_together(self):
+        with self.assertRaises(ValueError):
+            api_server.make_server("127.0.0.1", 0, tls_cert="server.pem", tls_key=None)
+
+    def test_make_server_requires_tls_by_default(self):
+        with self.assertRaises(ValueError):
+            api_server.make_server("127.0.0.1", 0)
+
+    def test_make_server_allows_insecure_http_when_opted_in(self):
+        fake_server = object()
+        with patch("api_server.CleanPlateThreadingServer", return_value=fake_server) as ctor:
+            server = api_server.make_server("127.0.0.1", 0, allow_insecure_http=True)
+
+        self.assertIs(server, fake_server)
+        ctor.assert_called_once()
+
+    def test_run_server_uses_configured_server_defaults(self):
+        config_path = Path(self.tempdir.name) / "cleanplate.ini"
+        cert_path = Path(self.tempdir.name) / "server.pem"
+        key_path = Path(self.tempdir.name) / "server.key"
+        cert_path.write_text("cert", encoding="utf-8")
+        key_path.write_text("key", encoding="utf-8")
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[server]",
+                    "host = 0.0.0.0",
+                    "port = 9443",
+                    "tls_cert = server.pem",
+                    "tls_key = server.key",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        fake_server = SimpleNamespace(serve_forever=lambda: None)
+        with patch.dict("os.environ", {"CLEANPLATE_CONFIG": str(config_path)}, clear=False):
+            with patch("api_server.make_server", return_value=fake_server) as make_server:
+                with patch("builtins.print"):
+                    api_server.run_server()
+
+        make_server.assert_called_once_with(
+            "0.0.0.0",
+            9443,
+            tls_cert=str(cert_path.resolve()),
+            tls_key=str(key_path.resolve()),
+            allow_insecure_http=False,
+        )
+
+    def test_wrap_server_socket_for_tls_uses_tls13(self):
+        fake_server = SimpleNamespace(socket=object())
+        wrapped_socket = object()
+
+        class FakeContext:
+            def __init__(self, protocol):
+                self.protocol = protocol
+                self.minimum_version = None
+                self.loaded = None
+
+            def load_cert_chain(self, *, certfile, keyfile):
+                self.loaded = (certfile, keyfile)
+
+            def wrap_socket(self, socket, *, server_side):
+                self.server_side = server_side
+                self.original_socket = socket
+                return wrapped_socket
+
+        fake_contexts = []
+
+        def fake_ssl_context(protocol):
+            context = FakeContext(protocol)
+            fake_contexts.append(context)
+            return context
+
+        with patch("api_server.ssl.SSLContext", side_effect=fake_ssl_context):
+            server = api_server._wrap_server_socket_for_tls(
+                fake_server,
+                certfile="server.pem",
+                keyfile="server.key",
+            )
+
+        self.assertIs(server, fake_server)
+        self.assertIs(fake_server.socket, wrapped_socket)
+        self.assertEqual(fake_contexts[0].loaded, ("server.pem", "server.key"))
 
 
 # ---------------------------------------------------------------------------

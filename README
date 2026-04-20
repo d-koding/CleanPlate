@@ -1,126 +1,226 @@
-CleanPlate — Secure Roommate Chore Coordinator
-==============================================
+CleanPlate
+==========
 
-Standard library only. No pip install required.
-Requires Python 3.10+.
+Secure roommate chore coordination with an interactive client shell and a local
+API server.
 
-Platform: macOS / Linux.
+- Standard library only
+- Python 3.10+
+- macOS / Linux
 
-
-OVERVIEW
+Overview
 --------
 
-CleanPlate now runs as a shell-wrapped client/server CLI:
+CleanPlate runs as a small client/server system:
 
-- `python3 main.py serve` starts the HTTP API server
-- `./cleanplate` or `python3 main.py interactive` opens the interactive client shell
-- commands entered in the shell are parsed locally, then sent to the server
-- the server owns the database and runs the business logic
+- `python3 main.py serve` starts the API server
+- `./cleanplate` opens the interactive client shell
+- shell commands are parsed locally, then sent to the server
+- the server owns the database and business logic
 
-This means your normal workflow is:
+HTTPS is the default transport. The client validates the server's X.509
+certificate and hostname, and the TLS stack requires TLS 1.3 when the local
+Python/OpenSSL build supports it.
 
-1. start the server in one terminal
-2. open the CleanPlate shell in another terminal
-3. run all app commands inside `cleanplate>`
+Persistent TLS Configuration
+----------------------------
 
+Startup is now streamlined through a shared config file: [cleanplate.ini](/Users/dylanoconnor/develop/CleanPlate/cleanplate.ini)
 
-QUICK START
+The default file configures:
+
+- client server URL
+- client CA certificate path
+- server host and port
+- server certificate and key paths
+- whether insecure HTTP is allowed
+
+Default config:
+
+```ini
+[client]
+server_url = https://127.0.0.1:8443
+ca_cert = server.pem
+allow_insecure_http = false
+
+[server]
+host = 127.0.0.1
+port = 8443
+tls_cert = server.pem
+tls_key = server.key
+allow_insecure_http = false
+```
+
+Because both client and server read this file, the normal secure startup flow is
+just:
+
+```bash
+# Terminal 1
+python3 main.py serve
+
+# Terminal 2
+./cleanplate
+```
+
+If you want a different config file, set `CLEANPLATE_CONFIG=/path/to/cleanplate.ini`.
+Environment variables like `CLEANPLATE_SERVER_URL`, `CLEANPLATE_CA_CERT`,
+`CLEANPLATE_TLS_CERT`, and `CLEANPLATE_TLS_KEY` still override the file when needed.
+
+CleanPlate also auto-loads a repo-local `.env` file if present, so env-based TLS
+settings work without re-exporting them each time.
+
+Quick Start
 -----------
 
-  # Terminal 1: start the server
-  export CLEANPLATE_AUDIT_HMAC_KEY='replace-with-a-long-random-secret'
-  export CLEANPLATE_USERNAME_HMAC_KEY='replace-with-a-second-long-random-secret'
-  python3 main.py serve
+```bash
+# Terminal 1
+export CLEANPLATE_AUDIT_HMAC_KEY='replace-with-a-long-random-secret'
+export CLEANPLATE_USERNAME_HMAC_KEY='replace-with-a-second-long-random-secret'
+python3 main.py serve
 
-  # Terminal 2: open the client shell
-  ./cleanplate
+# Terminal 2
+./cleanplate
+```
 
-  cleanplate> register --username alice
-  cleanplate> login --username alice
-  cleanplate> household create --name "42 Elm Street"
-  cleanplate> household list
-  cleanplate> exit
+Then work inside the shell:
 
+```text
+cleanplate> register alice
+cleanplate> login alice
+cleanplate> household create "42 Elm Street"
+cleanplate> household list
+cleanplate> exit
+```
 
-INTERACTIVE SHELL
+Interactive Shell
 -----------------
 
 Open the client shell with either:
 
-  ./cleanplate
-
-or:
-
-  python3 main.py interactive
+- `./cleanplate`
+- `python3 main.py interactive`
 
 Inside the shell:
 
-- type `help` to show the command tree
-- type `exit`, `quit`, or `q` to leave
-- omitted values are prompted for on many commands
+- `help` shows the command tree
+- `exit`, `quit`, or `q` leaves the session
+- omitted values are prompted for on more complex commands
 - shorthand phrases are normalized into the structured command form
 
 Examples:
 
-  cleanplate> register alice
-  cleanplate> login alice
-  cleanplate> whoami
-  cleanplate> household create "Maple House"
-  cleanplate> household join aB3xQr_kLmN
-  cleanplate> chore create 1 "Take out trash"
-  cleanplate> chore reschedule 4 --due 2026-04-20
-  cleanplate> activity complete 4
-  cleanplate> activity incomplete 4
-  cleanplate> help
-  cleanplate> exit
+```text
+cleanplate> register alice
+cleanplate> login alice
+cleanplate> whoami
+cleanplate> household create "Maple House"
+cleanplate> household join aB3xQr_kLmN
+cleanplate> chore create 1 "Take out trash"
+cleanplate> chore reschedule 4 --due 2026-04-20
+cleanplate> activity complete 4
+cleanplate> activity incomplete 4
+```
 
-By default the client connects to `http://127.0.0.1:8000`.
-To use a different server, set `CLEANPLATE_SERVER_URL`.
+TLS / Certificate Validation
+----------------------------
+
+When the server starts from the default config, it presents the certificate in
+`server.pem` and key in `server.key`. The client trusts the configured CA or
+certificate bundle from `cleanplate.ini`.
+
+You can also configure the same values in `.env`, for example:
+
+```dotenv
+CLEANPLATE_SERVER_URL=https://127.0.0.1:8443
+CLEANPLATE_CA_CERT=server.pem
+CLEANPLATE_TLS_CERT=server.pem
+CLEANPLATE_TLS_KEY=server.key
+```
+
+Best practice:
+
+- use a hostname that matches the certificate SAN
+- prefer a CA-issued certificate or a local development CA
+- keep plaintext HTTP disabled except for temporary debugging
+
+Important for local development:
+
+- the certificate must include a `subjectAltName` entry for the host you connect to
+- if you use `https://127.0.0.1:8443`, the cert needs `IP:127.0.0.1` in SAN
+- if you use `https://localhost:8443`, the cert needs `DNS:localhost` in SAN
+- a bare legacy `CN=127.0.0.1` without SAN is not enough for modern TLS hostname verification
+
+If you absolutely need local plaintext HTTP, opt into it explicitly in both
+places:
+
+```ini
+[client]
+allow_insecure_http = true
+server_url = http://127.0.0.1:8000
+
+[server]
+allow_insecure_http = true
+port = 8000
+```
+
+Or override temporarily with environment variables / CLI flags:
+
+```bash
+python3 main.py serve --insecure-http --port 8000
+export CLEANPLATE_ALLOW_INSECURE_HTTP=1
+export CLEANPLATE_SERVER_URL=http://127.0.0.1:8000
+```
+
+Sessions
+--------
 
 Local sessions are client-side files. By default they are terminal-scoped when
-possible, so different terminals can stay logged in separately. You can also
-override the session location with:
+possible, so different terminals can stay logged in separately.
+
+Optional overrides:
 
 - `CLEANPLATE_SESSION_NAME`
 - `CLEANPLATE_SESSION_PATH`
 
-
-COMMAND REFERENCE
+Command Reference
 -----------------
 
 Run these inside the `cleanplate>` prompt.
 
 Common shorthand examples:
 
-  register alice
-  login alice
-  reset-password alice
-  forgot-password alice
-  recover-password alice TOKEN_HERE
-  household create "Maple House"
-  household join aB3xQr_kLmN
-  household show 1
-  chore create 1 "Take out trash"
-  chore assign 4 bob
-  chore list 1
-  chore show 4
-  chore reschedule 4 --due 2026-04-20
-  activity complete 4
-  activity incomplete 4
-  activity dispute 4 --reason "Still dirty"
-  activity audit 1
-
+```text
+register alice
+login alice
+reset-password alice
+forgot-password alice
+recover-password alice TOKEN_HERE
+household create "Maple House"
+household join aB3xQr_kLmN
+household show 1
+chore create 1 "Take out trash"
+chore assign 4 bob
+chore list 1
+chore show 4
+chore reschedule 4 --due 2026-04-20
+activity complete 4
+activity incomplete 4
+activity dispute 4 --reason "Still dirty"
+activity audit 1
+```
 
 Identity & Access
 -----------------
 
-  register         [--username <name>]
-  login            [--username <name>]
-  reset-password   [--username <name>]
-  forgot-password  [--username <name>]
-  recover-password [--username <name>] [--token <reset_token>]
-  logout
-  whoami
+```text
+register         [--username <name>]
+login            [--username <name>]
+reset-password   [--username <name>]
+forgot-password  [--username <name>]
+recover-password [--username <name>] [--token <reset_token>]
+logout
+whoami
+```
 
 Notes:
 
@@ -128,26 +228,28 @@ Notes:
 - `forgot-password` issues a one-time recovery token
 - `recover-password` uses that token to set a new password
 
-
 Household Management
 --------------------
 
-  household create        [--name "42 Elm St"]
-  household join          [--code <invite_code>]
-  household show          [--id <household_id>]
-  household list
-  household rotate-invite [--id <household_id>]
-  household remove-member [--id <household_id>] [--username <name>]
-
+```text
+household create        [--name "42 Elm St"]
+household join          [--code <invite_code>]
+household show          [--id <household_id>]
+household list
+household rotate-invite [--id <household_id>]
+household remove-member [--id <household_id>] [--username <name>]
+```
 
 Chore Management
 ----------------
 
-  chore create     [--household <id>] [--title "Take out trash"] [--description "..."] [--due YYYY-MM-DD] [--assign <name>]...
-  chore assign     [--chore <id>] [--username <name>]
-  chore list       [--household <id>] [--status pending|complete|disputed] [--mine] [--overdue]
-  chore show       [--chore <id>]
-  chore reschedule [--chore <id>] [--due YYYY-MM-DD]
+```text
+chore create     [--household <id>] [--title "Take out trash"] [--description "..."] [--due YYYY-MM-DD] [--assign <name>]...
+chore assign     [--chore <id>] [--username <name>]
+chore list       [--household <id>] [--status pending|complete|disputed] [--mine] [--overdue]
+chore show       [--chore <id>]
+chore reschedule [--chore <id>] [--due YYYY-MM-DD]
+```
 
 Notes:
 
@@ -155,9 +257,8 @@ Notes:
 - chores can have multiple assignees
 - `chore reschedule` can both add a first due date and change an existing one
 
-
+---
 Activity & Completion
----------------------
 
   activity complete   [--chore <id>]
   activity incomplete [--chore <id>]
@@ -166,30 +267,29 @@ Activity & Completion
   activity audit      [--household <id>]
   activity poll
 
+---
 Notes:
 
 - any assigned roommate can mark a shared chore complete
 - assigned roommates and admins can also mark a completed chore back to `pending`
 - disputes remain available for “redo” and complaint resolution workflows
 
-
+---
 EXAMPLE WALKTHROUGH
--------------------
-
+---
   # Terminal 1
   python3 main.py serve
 
-  # Terminal 2
+  ---
   ./cleanplate
-
+  ---
   cleanplate> register alice
   cleanplate> register bob
 
   cleanplate> login alice
   cleanplate> household create "42 Elm Street"
-  # -> prints invite code, e.g. "Invite code: aB3xQr_kLmN"
-
   cleanplate> login bob
+  ---
   cleanplate> household join aB3xQr_kLmN
 
   cleanplate> login alice
@@ -204,9 +304,8 @@ EXAMPLE WALKTHROUGH
   cleanplate> activity audit 1
   cleanplate> exit
 
-
 FILE LAYOUT
------------
+---
 
   cleanplate        Shell wrapper that launches the interactive client
   main.py           Entry point for the server and interactive shell
@@ -223,11 +322,11 @@ FILE LAYOUT
 
 
 ARCHITECTURE
-------------
+---
 
 Client shell:
 
-- `./cleanplate` or `python3 main.py interactive`
+- ./cleanplate or python3 main.py interactive
 - parses commands locally
 - prompts for missing inputs
 - sends requests to the API server
@@ -235,14 +334,14 @@ Client shell:
 
 Server:
 
-- `python3 main.py serve`
+- python3 main.py serve
 - receives JSON requests over HTTP
 - dispatches them to the feature modules
 - owns all database access
 
 Feature modules:
 
-- `auth.py`, `households.py`, `chores.py`, and `activity.py`
+- auth.py, households.py, chores.py, and activity.py
 - contain the actual business logic, validation, role checks, and audit writes
 
 Database:
@@ -250,9 +349,9 @@ Database:
 - SQLite via `db.py`
 - accessed only on the server side
 
-
+---
 SECURITY NOTES
---------------
+---
 
 Passwords:
 

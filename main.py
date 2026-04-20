@@ -2,9 +2,6 @@
 main.py — cleanplate client CLI and server launcher.
 """
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import argparse
 import contextlib
 import io
@@ -13,6 +10,7 @@ import sys
 
 from api_server import run_server
 import client_cli
+from config import get_bool, get_int, get_option, resolve_path
 
 
 def _interactive_help() -> None:
@@ -149,9 +147,33 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve", help="Run the CleanPlate API server")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
-    serve.set_defaults(func=lambda args: run_server(args.host, args.port))
+    serve.add_argument("--host", default=get_option("server", "host", "127.0.0.1"))
+    serve.add_argument("--port", type=int, default=get_int("server", "port", 8443))
+    serve.add_argument(
+        "--tls-cert",
+        default=resolve_path(get_option("server", "tls_cert", None)),
+        help="Path to the server X.509 certificate (PEM)",
+    )
+    serve.add_argument(
+        "--tls-key",
+        default=resolve_path(get_option("server", "tls_key", None)),
+        help="Path to the server private key (PEM)",
+    )
+    serve.add_argument(
+        "--insecure-http",
+        action="store_true",
+        help="Allow plaintext HTTP for local-only development",
+    )
+    serve.set_defaults(insecure_http=get_bool("server", "allow_insecure_http", False))
+    serve.set_defaults(
+        func=lambda args: run_server(
+            args.host,
+            args.port,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            allow_insecure_http=args.insecure_http,
+        )
+    )
 
     shell = subparsers.add_parser("interactive", help="Start an interactive CleanPlate command session")
     shell.set_defaults(func=lambda args: _run_interactive_shell(build_command_parser()))
