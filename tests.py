@@ -713,10 +713,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Leave House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         out = self.capture_output(
             households.cmd_leave_household,
@@ -770,15 +767,9 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Succession Leave House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
         self.login_as("cara")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.cara_id, household["id"])
 
         self.login_as("alice")
         out = self.capture_output(
@@ -819,10 +810,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("One Remaining House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         out = self.capture_output(
@@ -864,10 +852,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Role House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         out = self.capture_output(
@@ -885,10 +870,7 @@ class TestHouseholds(cleanplateTestCase):
     def test_non_admin_cannot_promote_member(self):
         household = self.create_household_as_alice("Permissions House")
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("bob")
         with self.assertRaises(SystemExit):
@@ -898,10 +880,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Demotion House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         out = self.capture_output(
@@ -926,15 +905,9 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Succession House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
         self.login_as("cara")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.cara_id, household["id"])
 
         promoted = households._promote_successor_if_needed(household["id"], self.alice_id)
 
@@ -973,7 +946,7 @@ class TestHouseholds(cleanplateTestCase):
     def test_join_household_rejects_second_household_with_same_name_for_same_user(self):
         first = self.create_household_as_alice("Maple House")
         self.login_as("bob")
-        self.capture_output(households.cmd_join_household, Namespace(code=first["invite_code"]))
+        self.join_household(self.bob_id, first["id"])
 
         self.login_as("cara")
         second_out = self.capture_output(
@@ -987,9 +960,10 @@ class TestHouseholds(cleanplateTestCase):
         )
 
         self.login_as("bob")
+        token = households._issue_invite_token(second["id"], self.bob_id)
         out = self.capture_output(
             households.cmd_join_household,
-            Namespace(code=second["invite_code"]),
+            Namespace(code=token),
         )
         self.assertIn("already belong to a household", out.lower())
         self.assertIn("rename", out.lower())
@@ -1568,6 +1542,7 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.command, "serve")
         self.assertTrue(args.insecure_http)
         self.assertTrue(callable(args.func))
+
 
     def test_build_parser_rejects_direct_client_command(self):
         parser = main.build_parser()
