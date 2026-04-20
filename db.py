@@ -10,7 +10,7 @@ Usage from any other module:
 
 import sqlite3
 import os
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "cleanplate.db")
 
@@ -48,6 +48,33 @@ def execute(sql: str, params: tuple = ()) -> int:
         return cur.lastrowid
 
 
+@contextmanager
+def transaction():
+    """Open a transaction-scoped connection and commit/rollback atomically."""
+    conn = get_conn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def query_tx(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+    return conn.execute(sql, params).fetchall()
+
+
+def query_one_tx(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+    return conn.execute(sql, params).fetchone()
+
+
+def execute_tx(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
+    cur = conn.execute(sql, params)
+    return cur.lastrowid
+
+
 def init_db() -> None:
     """Create all tables on first run. Safe to call every startup."""
     with closing(get_conn()) as conn:
@@ -58,7 +85,7 @@ def init_db() -> None:
                 username      TEXT    NOT NULL UNIQUE,
                 display_name  TEXT,
                 password_hash TEXT    NOT NULL,
-                failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+                failed_login_attempts INTEGER NOT NULL DEFAULT 0 CHECK (failed_login_attempts >= 0),
                 locked_until  TEXT,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             );
@@ -76,7 +103,8 @@ def init_db() -> None:
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id      INTEGER NOT NULL REFERENCES users(id),
                 household_id INTEGER NOT NULL REFERENCES households(id),
-                role         TEXT    NOT NULL DEFAULT 'roommate',
+                role         TEXT    NOT NULL DEFAULT 'roommate'
+                                     CHECK (role IN ('admin', 'roommate')),
                 joined_at    TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE (user_id, household_id)
             );
@@ -89,7 +117,8 @@ def init_db() -> None:
                 description  TEXT    NOT NULL DEFAULT '',
                 assigned_to  INTEGER REFERENCES users(id),
                 due_date     TEXT,
-                status       TEXT    NOT NULL DEFAULT 'pending',
+                status       TEXT    NOT NULL DEFAULT 'pending'
+                                     CHECK (status IN ('pending', 'complete', 'disputed')),
                 created_by   INTEGER NOT NULL REFERENCES users(id),
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
                 completed_at TEXT
@@ -109,7 +138,7 @@ def init_db() -> None:
                 chore_id     INTEGER NOT NULL REFERENCES chores(id),
                 submitted_by INTEGER NOT NULL REFERENCES users(id),
                 description  TEXT    NOT NULL,
-                resolved     INTEGER NOT NULL DEFAULT 0,
+                resolved     INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)),
                 resolution   TEXT,
                 resolved_by  INTEGER REFERENCES users(id),
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -122,7 +151,7 @@ def init_db() -> None:
                 household_id INTEGER NOT NULL REFERENCES households(id),
                 message      TEXT    NOT NULL,
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-                read         INTEGER NOT NULL DEFAULT 0
+                read         INTEGER NOT NULL DEFAULT 0 CHECK (read IN (0, 1))
             );
 
             -- Audit log (HMAC-chained) ---------------------------------------
@@ -145,7 +174,7 @@ def init_db() -> None:
                 user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 token_hash TEXT    NOT NULL,
                 expires_at TEXT    NOT NULL,
-                used       INTEGER NOT NULL DEFAULT 0,
+                used       INTEGER NOT NULL DEFAULT 0 CHECK (used IN (0, 1)),
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
