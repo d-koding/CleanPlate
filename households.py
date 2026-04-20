@@ -16,7 +16,7 @@ import secrets
 import sqlite3
 
 from auth import _find_user_by_username, _send_email
-from db import execute, query, query_one
+from db import execute, execute_tx, query, query_one, query_one_tx, transaction
 from session import require_session
 
 
@@ -68,11 +68,18 @@ def require_admin(user_id: int, household_id: int):
     return m
 
 
-def _count_admins(household_id: int) -> int:
-    row = query_one(
-        "SELECT COUNT(*) AS count FROM members WHERE household_id = ? AND role = 'admin'",
-        (household_id,),
-    )
+def _count_admins(household_id: int, *, conn=None) -> int:
+    if conn is None:
+        row = query_one(
+            "SELECT COUNT(*) AS count FROM members WHERE household_id = ? AND role = 'admin'",
+            (household_id,),
+        )
+    else:
+        row = query_one_tx(
+            conn,
+            "SELECT COUNT(*) AS count FROM members WHERE household_id = ? AND role = 'admin'",
+            (household_id,),
+        )
     return row["count"] if row is not None else 0
 
 
@@ -87,31 +94,53 @@ def _next_roommate_to_promote(household_id: int, exclude_user_id: int) -> sqlite
     )
 
 
-def _promote_successor_if_needed(household_id: int, departing_user_id: int) -> str | None:
-    departing_membership = get_membership(departing_user_id, household_id)
+def _promote_successor_if_needed(household_id: int, departing_user_id: int, *, conn=None) -> str | None:
+    if conn is None:
+        departing_membership = get_membership(departing_user_id, household_id)
+    else:
+        departing_membership = query_one_tx(
+            conn,
+            "SELECT * FROM members WHERE user_id = ? AND household_id = ?",
+            (departing_user_id, household_id),
+        )
     if departing_membership is None or departing_membership["role"] != "admin":
         return None
 
-    if _count_admins(household_id) > 1:
+    if _count_admins(household_id, conn=conn) > 1:
         return None
 
     successor = _next_roommate_to_promote(household_id, departing_user_id)
     if successor is None:
         return None
 
-    execute(
-        "UPDATE members SET role = 'admin' WHERE user_id = ? AND household_id = ?",
-        (successor["user_id"], household_id),
-    )
-    promoted_user = query_one("SELECT display_name FROM users WHERE id = ?", (successor["user_id"],))
+    if conn is None:
+        execute(
+            "UPDATE members SET role = 'admin' WHERE user_id = ? AND household_id = ?",
+            (successor["user_id"], household_id),
+        )
+        promoted_user = query_one("SELECT display_name FROM users WHERE id = ?", (successor["user_id"],))
+    else:
+        execute_tx(
+            conn,
+            "UPDATE members SET role = 'admin' WHERE user_id = ? AND household_id = ?",
+            (successor["user_id"], household_id),
+        )
+        promoted_user = query_one_tx(conn, "SELECT display_name FROM users WHERE id = ?", (successor["user_id"],))
     return promoted_user["display_name"] if promoted_user is not None else None
 
 
-def _count_members(household_id: int) -> int:
-    row = query_one(
-        "SELECT COUNT(*) AS count FROM members WHERE household_id = ?",
-        (household_id,),
-    )
+def _count_members(household_id: int, *, conn=None) -> int:
+    if conn is None:
+        row = query_one(
+            "SELECT COUNT(*) AS count FROM members WHERE household_id = ?",
+            (household_id,),
+        )
+    else:
+        row = query_one_tx(
+            conn,
+            "SELECT COUNT(*) AS count FROM members WHERE household_id = ?",
+            (household_id,),
+        )
     return row["count"] if row is not None else 0
 
 
@@ -146,19 +175,46 @@ def _member_with_name_conflict(household_id: int, new_name: str) -> sqlite3.Row 
     )
 
 
-def _delete_household_if_empty(household_id: int) -> bool:
-    if _count_members(household_id) != 0:
+def _cleanup_member_assignments(household_id: int, user_id: int, *, conn) -> None:
+    execute_tx(
+        conn,
+        """DELETE FROM chore_assignees
+           WHERE user_id = ?
+             AND chore_id IN (SELECT id FROM chores WHERE household_id = ?)""",
+        (user_id, household_id),
+    )
+    execute_tx(
+        conn,
+        "UPDATE chores SET assigned_to = NULL WHERE household_id = ? AND assigned_to = ?",
+        (household_id, user_id),
+    )
+
+
+def _delete_household_if_empty(household_id: int, *, conn=None) -> bool:
+    if _count_members(household_id, conn=conn) != 0:
         return False
 
-    execute(
-        """DELETE FROM complaints
-           WHERE chore_id IN (SELECT id FROM chores WHERE household_id = ?)""",
-        (household_id,),
-    )
-    execute("DELETE FROM notifications WHERE household_id = ?", (household_id,))
-    execute("DELETE FROM audit_log WHERE household_id = ?", (household_id,))
-    execute("DELETE FROM chores WHERE household_id = ?", (household_id,))
-    execute("DELETE FROM households WHERE id = ?", (household_id,))
+    if conn is None:
+        execute(
+            """DELETE FROM complaints
+               WHERE chore_id IN (SELECT id FROM chores WHERE household_id = ?)""",
+            (household_id,),
+        )
+        execute("DELETE FROM notifications WHERE household_id = ?", (household_id,))
+        execute("DELETE FROM audit_log WHERE household_id = ?", (household_id,))
+        execute("DELETE FROM chores WHERE household_id = ?", (household_id,))
+        execute("DELETE FROM households WHERE id = ?", (household_id,))
+    else:
+        execute_tx(
+            conn,
+            """DELETE FROM complaints
+               WHERE chore_id IN (SELECT id FROM chores WHERE household_id = ?)""",
+            (household_id,),
+        )
+        execute_tx(conn, "DELETE FROM notifications WHERE household_id = ?", (household_id,))
+        execute_tx(conn, "DELETE FROM audit_log WHERE household_id = ?", (household_id,))
+        execute_tx(conn, "DELETE FROM chores WHERE household_id = ?", (household_id,))
+        execute_tx(conn, "DELETE FROM households WHERE id = ?", (household_id,))
     return True
 
 
@@ -289,11 +345,11 @@ def cmd_rotate_invite(args) -> None:
     require_admin(session["user_id"], household_id)
 
     new_code = _new_invite_code()
-    execute("UPDATE households SET invite_code = ? WHERE id = ?",
-            (new_code, household_id))
-
     from activity import record
-    record(household_id, session["user_id"], "invite.rotate", {})
+    with transaction() as conn:
+        execute_tx(conn, "UPDATE households SET invite_code = ? WHERE id = ?",
+                   (new_code, household_id))
+        record(household_id, session["user_id"], "invite.rotate", {}, conn=conn)
 
     print(f"New invite code: {new_code}")
     print("The previous invite code is now invalid.")
@@ -381,17 +437,27 @@ def cmd_remove_member(args) -> None:
         print(f"Error: '{args.username}' is not in this household.")
         return
 
-    promoted_username = _promote_successor_if_needed(household_id, target["id"])
-
-    execute("DELETE FROM members WHERE user_id = ? AND household_id = ?",
-            (target["id"], household_id))
-
     from activity import record
-    record(household_id, session["user_id"], "membership.remove",
-           {"removed_username": args.username})
-    if promoted_username is not None:
-        record(household_id, session["user_id"], "membership.promote",
-               {"username": promoted_username, "reason": "admin_departure"})
+    with transaction() as conn:
+        promoted_username = _promote_successor_if_needed(household_id, target["id"], conn=conn)
+        _cleanup_member_assignments(household_id, target["id"], conn=conn)
+        execute_tx(conn, "DELETE FROM members WHERE user_id = ? AND household_id = ?",
+                   (target["id"], household_id))
+        record(
+            household_id,
+            session["user_id"],
+            "membership.remove",
+            {"removed_username": args.username},
+            conn=conn,
+        )
+        if promoted_username is not None:
+            record(
+                household_id,
+                session["user_id"],
+                "membership.promote",
+                {"username": promoted_username, "reason": "admin_departure"},
+                conn=conn,
+            )
 
     household_name = query_one("SELECT name FROM households WHERE id = ?", (household_id,))["name"]
     print(f"'{args.username}' removed from household '{household_name}'.")
@@ -414,29 +480,33 @@ def cmd_leave_household(args) -> None:
     membership = require_membership(session["user_id"], household_id)
     household_row = query_one("SELECT name FROM households WHERE id = ?", (household_id,))
     household_name = household_row["name"]
-    promoted_username = _promote_successor_if_needed(household_id, session["user_id"])
-
-    execute(
-        "DELETE FROM members WHERE user_id = ? AND household_id = ?",
-        (session["user_id"], household_id),
-    )
-    household_deleted = _delete_household_if_empty(household_id)
-
     from activity import record
-    if not household_deleted:
-        record(
-            household_id,
-            session["user_id"],
-            "membership.leave",
-            {"username": session["username"]},
+    with transaction() as conn:
+        promoted_username = _promote_successor_if_needed(household_id, session["user_id"], conn=conn)
+        _cleanup_member_assignments(household_id, session["user_id"], conn=conn)
+        execute_tx(
+            conn,
+            "DELETE FROM members WHERE user_id = ? AND household_id = ?",
+            (session["user_id"], household_id),
         )
-        if promoted_username is not None and membership["role"] == "admin":
+        household_deleted = _delete_household_if_empty(household_id, conn=conn)
+
+        if not household_deleted:
             record(
                 household_id,
                 session["user_id"],
-                "membership.promote",
-                {"username": promoted_username, "reason": "admin_departure"},
+                "membership.leave",
+                {"username": session["username"]},
+                conn=conn,
             )
+            if promoted_username is not None and membership["role"] == "admin":
+                record(
+                    household_id,
+                    session["user_id"],
+                    "membership.promote",
+                    {"username": promoted_username, "reason": "admin_departure"},
+                    conn=conn,
+                )
 
     print(f"You left household '{household_name}'.")
     if household_deleted:
