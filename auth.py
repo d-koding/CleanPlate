@@ -7,19 +7,15 @@ Responsibilities:
   - Password hashing (all crypto decisions live here)
   - Session management helpers
 
-Standard library only: hashlib, hmac, secrets, getpass
+Dependencies: hashlib, hmac, secrets, getpass (stdlib); zxcvbn (third-party)
 
-Password strength checker follows these constraints:
-
-blacklisted passwords from:
-https://github.com/danielmiessler/SecLists/blob/master/Discovery/Web-Content/common.txt
-https://github.com/danielmiessler/SecLists/tree/master/Passwords
-
-minumum chars: 8
+Password strength requirements:
+  - minimum 8 characters
+  - not in common/compromised password lists (SecLists 10k + common.txt)
+  - zxcvbn score ≥ 2 out of 4 ("fair" or better)
+  - interactive prompts loop and display zxcvbn feedback until the requirement is met
 
 TODO:
-Password reset / password recovery
-
 Username should be HMAC
 
 """
@@ -31,6 +27,7 @@ import os
 import re
 import secrets
 import smtplib
+import zxcvbn as _zxcvbn
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -202,8 +199,17 @@ def _verify_password(plaintext: str, stored_hash: str) -> bool:
     )
     return hmac.compare_digest(actual_dk, expected_dk)
 
-def _check_password_strength(password: str) -> list[str]:
-    errors = []
+_ZXCVBN_MIN_SCORE = 2  # 0-4; 2 = "somewhat guessable"
+_SCORE_LABELS = ["very weak", "weak", "fair", "strong", "very strong"]
+
+
+def _check_password_strength(password: str) -> tuple[list[str], list[str]]:
+    """
+    Returns (errors, suggestions).
+    errors: hard failures — password must not be accepted.
+    suggestions: human-readable hints from zxcvbn to guide the user.
+    """
+    errors: list[str] = []
 
     if len(password) < 8:
         errors.append("at least 8 characters")
@@ -219,11 +225,6 @@ def _check_password_strength(password: str) -> list[str]:
     if password.lower() in _DICTIONARY:
         errors.append("password is a dictionary word")
 
-    if not any(c.isupper() for c in password):
-        errors.append("at least one uppercase letter")
-    if not any(not c.isalnum() for c in password):
-        errors.append("at least one symbol (e.g. !@#$%)")
-
     if len(set(password)) < 3:
         errors.append("password is too repetitive")
     if _is_sequential(password):
@@ -233,7 +234,45 @@ def _check_password_strength(password: str) -> list[str]:
     if any(word in password.lower() for word in CONTEXT):
         errors.append("password must not contain the application name or obvious derivatives")
 
-    return errors
+    result = _zxcvbn.zxcvbn(password)
+    score: int = result["score"]
+    feedback = result["feedback"]
+    suggestions: list[str] = list(feedback.get("suggestions", []))
+    warning: str = feedback.get("warning", "")
+    if warning and warning not in suggestions:
+        suggestions.insert(0, warning)
+
+    if score < _ZXCVBN_MIN_SCORE:
+        label = _SCORE_LABELS[score]
+        errors.append(
+            f"password is too weak ({label}; aim for at least '{_SCORE_LABELS[_ZXCVBN_MIN_SCORE]}')"
+        )
+
+    return errors, suggestions
+
+
+def _prompt_password_with_strength(prompt: str = "Password (min 8 chars): ") -> str | None:
+    """
+    Interactively prompt for a password, looping until strength requirements
+    are met.  Prints zxcvbn feedback after each failed attempt.
+    Returns the accepted password, or None if the user provides an empty input.
+    """
+    while True:
+        password = getpass.getpass(prompt)
+        if not password:
+            print("Error: password cannot be empty.")
+            return None
+        errors, suggestions = _check_password_strength(password)
+        if not errors:
+            return password
+        print("Password does not meet requirements:")
+        for e in errors:
+            print(f"  • {e}")
+        if suggestions:
+            print("Tips to strengthen your password:")
+            for s in suggestions:
+                print(f"  → {s}")
+        print("Please try a different password.\n")
 
 
 def _is_sequential(password: str) -> bool:
@@ -248,6 +287,21 @@ def _is_sequential(password: str) -> bool:
 def _validate_email(email: str) -> bool:
     """Basic structural check — not exhaustive, just catches obvious garbage."""
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
+def _prompt_email(prompt: str = "Email address: ") -> str | None:
+    """
+    Interactively prompt for an email address, looping until a valid one is given.
+    Returns the normalised email, or None if the user provides an empty input.
+    """
+    while True:
+        email = input(prompt).strip().lower()
+        if not email:
+            print("Error: email cannot be empty.")
+            return None
+        if _validate_email(email):
+            return email
+        print(f"Error: '{email}' is not a valid email address. Please try again.")
 
 
 def _send_email(recipient: str, subject: str, body: str) -> None:
@@ -286,14 +340,14 @@ def _send_verification_email(email: str, code: str) -> None:
         f"    {code}\n\n"
         f"Enter it with:\n\n"
         f"    verify {code}\n\n"
-        f"This code expires in 24 hours.\n"
+        f"This code expires in 5 minutes.\n"
     )
     _send_email(email, "Verify your CleanPlate account", body)
 
 
 def _issue_verification_code(user_id: int) -> str:
     code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
-    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     execute(
         """INSERT INTO email_verifications (user_id, code, expires_at)
            VALUES (?, ?, ?)
@@ -375,28 +429,37 @@ def cmd_register(args) -> None:
 
     email = getattr(args, "email", None)
     if email is None:
-        email = input("Email address: ").strip()
-    email = email.strip().lower()
-    if not email:
-        print("Error: email cannot be empty.")
-        return
-    if not _validate_email(email):
-        print("Error: invalid email address.")
-        return
+        email = _prompt_email()
+        if email is None:
+            return
+    else:
+        email = email.strip().lower()
+        if not email:
+            print("Error: email cannot be empty.")
+            return
+        if not _validate_email(email):
+            print("Error: invalid email address.")
+            return
 
     password = getattr(args, "password", None)
     if password is None:
-        password = getpass.getpass("Password (min 8 chars): ")
-    if not password:
-        print("Error: password cannot be empty.")
-        return
-
-    recipe_errors = _check_password_strength(password)
-    if recipe_errors:
-        print("Password does not meet requirements:")
-        for rule in recipe_errors:
-            print(f"  • {rule}")
-        return
+        password = _prompt_password_with_strength()
+        if password is None:
+            return
+    else:
+        if not password:
+            print("Error: password cannot be empty.")
+            return
+        errors, suggestions = _check_password_strength(password)
+        if errors:
+            print("Password does not meet requirements:")
+            for rule in errors:
+                print(f"  • {rule}")
+            if suggestions:
+                print("Tips to strengthen your password:")
+                for s in suggestions:
+                    print(f"  → {s}")
+            return
 
     confirm = getattr(args, "confirm_password", None)
     if confirm is None:
@@ -611,17 +674,23 @@ def cmd_reset_password(args) -> None:
 
     new_password = getattr(args, "new_password", None)
     if new_password is None:
-        new_password = getpass.getpass("New password (min 8 chars): ")
-    if not new_password:
-        print("Error: new password cannot be empty.")
-        return
-
-    recipe_errors = _check_password_strength(new_password)
-    if recipe_errors:
-        print("Error: ")
-        for rule in recipe_errors:
-            print(f"  • {rule}")
-        return
+        new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+        if new_password is None:
+            return
+    else:
+        if not new_password:
+            print("Error: new password cannot be empty.")
+            return
+        errors, suggestions = _check_password_strength(new_password)
+        if errors:
+            print("Password does not meet requirements:")
+            for rule in errors:
+                print(f"  • {rule}")
+            if suggestions:
+                print("Tips to strengthen your password:")
+                for s in suggestions:
+                    print(f"  → {s}")
+            return
 
     if _verify_password(new_password, stored_hash):
         print("Error: new password must be different from the current password.")
@@ -670,7 +739,7 @@ def cmd_forgot_password(args) -> None:
         return
 
     token = secrets.token_urlsafe(24)
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
 
     try:
         execute(
@@ -694,7 +763,7 @@ def cmd_forgot_password(args) -> None:
         f"    {token}\n\n"
         f"Run this command to reset your password:\n\n"
         f"    recover-password {username} {token}\n\n"
-        f"This token expires in 15 minutes. If you did not request this, ignore this email.\n"
+        f"This token expires in 5 minutes. If you did not request this, ignore this email.\n"
     )
     try:
         _send_email(email, "CleanPlate password reset", body)
@@ -760,17 +829,23 @@ def cmd_recover_password(args) -> None:
 
     new_password = getattr(args, "new_password", None)
     if new_password is None:
-        new_password = getpass.getpass("New password (min 8 chars): ")
-    if not new_password:
-        print("Error: new password cannot be empty.")
-        return
-
-    recipe_errors = _check_password_strength(new_password)
-    if recipe_errors:
-        print("Error: ")
-        for rule in recipe_errors:
-            print(f"  • {rule}")
-        return
+        new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+        if new_password is None:
+            return
+    else:
+        if not new_password:
+            print("Error: new password cannot be empty.")
+            return
+        errors, suggestions = _check_password_strength(new_password)
+        if errors:
+            print("Password does not meet requirements:")
+            for rule in errors:
+                print(f"  • {rule}")
+            if suggestions:
+                print("Tips to strengthen your password:")
+                for s in suggestions:
+                    print(f"  → {s}")
+            return
 
     if _verify_password(new_password, row["password_hash"]):
         print("Error: new password must be different from the current password.")

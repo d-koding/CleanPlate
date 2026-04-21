@@ -94,15 +94,22 @@ def cmd_register(args) -> None:
     if not _validate_username_format(username):
         return
 
-    email = (getattr(args, "email", None) or _prompt_text("Email address: ")).strip()
+    _email_arg = getattr(args, "email", None)
+    if _email_arg:
+        email = _email_arg.strip().lower()
+        from auth import _validate_email
+        if not _validate_email(email):
+            print(f"Error: '{email}' is not a valid email address.")
+            return
+    else:
+        from auth import _prompt_email
+        email = _prompt_email()
+        if email is None:
+            return
 
-    from auth import _check_password_strength
-    password = getpass.getpass("Password (min 8 chars): ")
-    errors = _check_password_strength(password)
-    if errors:
-        print("Password does not meet requirements:")
-        for e in errors:
-            print(f"  • {e}")
+    from auth import _prompt_password_with_strength
+    password = _prompt_password_with_strength()
+    if password is None:
         return
 
     confirm_password = getpass.getpass("Confirm password: ")
@@ -163,9 +170,12 @@ def cmd_resend_verification(args) -> None:
 
 
 def cmd_reset_password(args) -> None:
+    from auth import _prompt_password_with_strength
     username = (args.username or _prompt_text("Username: ")).strip()
     current_password = getpass.getpass("Current password: ")
-    new_password = getpass.getpass("New password (min 8 chars): ")
+    new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+    if new_password is None:
+        return
     confirm_password = getpass.getpass("Confirm new password: ")
 
     try:
@@ -201,9 +211,12 @@ def cmd_forgot_password(args) -> None:
 
 
 def cmd_recover_password(args) -> None:
+    from auth import _prompt_password_with_strength
     username = (_arg(args, "username", "username_pos") or input("Username: ").strip()).strip()
     token = (_arg(args, "token", "token_pos") or input("Reset token: ").strip()).strip()
-    new_password = getpass.getpass("New password (min 8 chars): ")
+    new_password = _prompt_password_with_strength("New password (min 8 chars): ")
+    if new_password is None:
+        return
     confirm_password = getpass.getpass("Confirm new password: ")
 
     try:
@@ -293,21 +306,27 @@ def cmd_leave_household(args) -> None:
 
 
 def cmd_promote_member(args) -> None:
-    household_name = _arg(args, "household", "household_pos")
-    username = _arg(args, "username", "username_pos")
-    _remote_command("household.promote", {"household": household_name, "username": username})
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
+    username = _arg(args, "username", "username_pos") or _prompt_text("Username to promote: ")
+    _remote_command("household.promote", {"household": household_ref, "username": username})
 
 
 def cmd_demote_member(args) -> None:
-    household_name = _arg(args, "household", "household_pos")
-    username = _arg(args, "username", "username_pos")
-    _remote_command("household.demote", {"household": household_name, "username": username})
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
+    username = _arg(args, "username", "username_pos") or _prompt_text("Username to demote: ")
+    _remote_command("household.demote", {"household": household_ref, "username": username})
 
 
 def cmd_send_invite(args) -> None:
-    household_name = _arg(args, "household", "household_pos")
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
     email = _arg(args, "email", "email_pos") or input("Recipient (email or username): ").strip()
-    _remote_command("household.send-invite", {"household": household_name, "email": email})
+    _remote_command("household.send-invite", {"household": household_ref, "email": email})
 
 
 def cmd_create_chore(args) -> None:
@@ -506,6 +525,18 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--email", dest="email", default=None, metavar="EMAIL_OR_USERNAME")
     c.set_defaults(household=None, email=None)
     c.set_defaults(func=cmd_send_invite)
+
+    p = subparsers.add_parser("promote", help="Promote a roommate to admin (flat alias)")
+    p.add_argument("username_pos", nargs="?", metavar="USERNAME")
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.add_argument("--username", default=None)
+    p.set_defaults(household=None, username=None, func=cmd_promote_member)
+
+    p = subparsers.add_parser("demote", help="Demote an admin to roommate (flat alias)")
+    p.add_argument("username_pos", nargs="?", metavar="USERNAME")
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.add_argument("--username", default=None)
+    p.set_defaults(household=None, username=None, func=cmd_demote_member)
 
     p = subparsers.add_parser("chore", help="Chore management commands")
     sub = p.add_subparsers(dest="chore_cmd", required=True)

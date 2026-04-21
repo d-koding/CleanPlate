@@ -4,6 +4,9 @@ CleanPlate
 Secure roommate chore coordination with an interactive client shell and a local
 API server.
 
+Requires Python 3.10+.
+Third-party dependency: zxcvbn (`pip install zxcvbn`)
+
 - Standard library only
 - Python 3.10+
 - macOS / Linux
@@ -186,7 +189,7 @@ Optional overrides:
 Command Reference
 -----------------
 
-Run these inside the `cleanplate>` prompt.
+Run all commands inside the `cleanplate>` prompt.
 
 Common shorthand examples:
 
@@ -273,7 +276,7 @@ Notes:
 
 - any assigned roommate can mark a shared chore complete
 - assigned roommates and admins can also mark a completed chore back to `pending`
-- disputes remain available for “redo” and complaint resolution workflows
+- disputes remain available for "redo" and complaint resolution workflows
 
 ---
 EXAMPLE WALKTHROUGH
@@ -357,7 +360,7 @@ SECURITY NOTES
 Passwords:
 
 - stored with `scrypt`
-- password strength checks reject common, sequential, and weak passwords
+- must pass zxcvbn score ≥ 2 and not appear in common/breached password lists
 
 Usernames:
 

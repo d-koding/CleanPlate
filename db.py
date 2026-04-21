@@ -186,6 +186,17 @@ def init_db() -> None:
                 expires_at TEXT    NOT NULL,
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- User-specific household invite tokens -------------------------
+            CREATE TABLE IF NOT EXISTS household_invites (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                household_id  INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                target_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash    TEXT    NOT NULL,
+                expires_at    TEXT    NOT NULL,
+                used          INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         user_columns = {
