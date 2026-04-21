@@ -306,27 +306,27 @@ def cmd_leave_household(args) -> None:
 
 
 def cmd_promote_member(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
-    if household_id is None:
-        household_id = _prompt_int("Household ID: ")
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
     username = _arg(args, "username", "username_pos") or _prompt_text("Username to promote: ")
-    _remote_command("household.promote", {"id": household_id, "username": username})
+    _remote_command("household.promote", {"household": household_ref, "username": username})
 
 
 def cmd_demote_member(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
-    if household_id is None:
-        household_id = _prompt_int("Household ID: ")
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
     username = _arg(args, "username", "username_pos") or _prompt_text("Username to demote: ")
-    _remote_command("household.demote", {"id": household_id, "username": username})
+    _remote_command("household.demote", {"household": household_ref, "username": username})
 
 
 def cmd_send_invite(args) -> None:
-    household_id = _arg(args, "id", "id_pos")
-    if household_id is None:
-        household_id = _prompt_int("Household ID: ")
+    household_ref = _arg(args, "id", "id_pos") or _arg(args, "household")
+    if household_ref is None:
+        household_ref = _prompt_text("Household name: ")
     email = _arg(args, "email", "email_pos") or input("Recipient (email or username): ").strip()
-    _remote_command("household.send-invite", {"id": household_id, "email": email})
+    _remote_command("household.send-invite", {"household": household_ref, "email": email})
 
 
 def cmd_create_chore(args) -> None:
