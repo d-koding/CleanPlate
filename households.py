@@ -322,6 +322,7 @@ def cmd_join_household(args) -> None:
     if _user_has_household_named(session["user_id"], token_row["name"]):
         execute("UPDATE household_invites SET used = 1 WHERE id = ?", (token_row["id"],))
         print(f"Error: you already belong to a household named '{token_row['name']}'.")
+        print("Ask an admin of one of those households to rename it before joining.")
         return
     execute(
         "INSERT INTO members (user_id, household_id, role) VALUES (?, ?, 'roommate')",

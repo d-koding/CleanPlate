@@ -643,7 +643,7 @@ class TestHouseholds(cleanplateTestCase):
         liam_house = self.get_household_by_name("Liam House")
 
         self.login_as("alice")
-        self.capture_output(households.cmd_join_household, Namespace(code=liam_house["invite_code"]))
+        self.join_household(self.alice_id, liam_house["id"])
 
         self.login_as("bob")
         out = self.capture_output(
@@ -677,10 +677,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Cleanup House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         self.capture_output(
@@ -731,10 +728,7 @@ class TestHouseholds(cleanplateTestCase):
         household = self.create_household_as_alice("Leave Cleanup House")
 
         self.login_as("bob")
-        self.capture_output(
-            households.cmd_join_household,
-            Namespace(code=household["invite_code"]),
-        )
+        self.join_household(self.bob_id, household["id"])
 
         self.login_as("alice")
         self.capture_output(
