@@ -526,6 +526,18 @@ def register_subparsers(subparsers) -> None:
     c.set_defaults(household=None, email=None)
     c.set_defaults(func=cmd_send_invite)
 
+    p = subparsers.add_parser("promote", help="Promote a roommate to admin (flat alias)")
+    p.add_argument("username_pos", nargs="?", metavar="USERNAME")
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.add_argument("--username", default=None)
+    p.set_defaults(household=None, username=None, func=cmd_promote_member)
+
+    p = subparsers.add_parser("demote", help="Demote an admin to roommate (flat alias)")
+    p.add_argument("username_pos", nargs="?", metavar="USERNAME")
+    p.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    p.add_argument("--username", default=None)
+    p.set_defaults(household=None, username=None, func=cmd_demote_member)
+
     p = subparsers.add_parser("chore", help="Chore management commands")
     sub = p.add_subparsers(dest="chore_cmd", required=True)
 

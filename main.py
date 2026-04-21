@@ -72,6 +72,9 @@ def _normalize_interactive_argv(argv: list[str]) -> list[str]:
         if subcommand == "send-invite" and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
             return [group, subcommand, "--household", argv[2], "--email", argv[3], *argv[4:]]
 
+    if command in {"promote", "demote"} and len(argv) >= 2 and not argv[1].startswith("-"):
+        return [command, "--username", argv[1], *argv[2:]]
+
     if group == "chore":
         if subcommand == "create" and len(argv) >= 4 and not argv[2].startswith("-") and not argv[3].startswith("-"):
             return [group, subcommand, "--household", argv[2], "--title", argv[3], *argv[4:]]
