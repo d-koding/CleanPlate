@@ -57,6 +57,11 @@ def _build_ssl_context(server_url: str) -> ssl.SSLContext | None:
 def invoke(action: str, args: dict, session: dict | None) -> dict:
     server_url = get_server_url()
     parsed = urlparse(server_url)
+    if parsed.scheme not in {"https", "http"}:
+        raise ClientError(
+            f"Unsupported URL scheme '{parsed.scheme or '(none)'}' for CLEANPLATE_SERVER_URL. "
+            "Use http:// or https://."
+        )
     allow_insecure_http = os.environ.get("CLEANPLATE_ALLOW_INSECURE_HTTP", "").lower() in {"1", "true", "yes"}
     if parsed.scheme != "https" and not (allow_insecure_http or _allow_insecure_http()):
         raise ClientError(
@@ -72,7 +77,8 @@ def invoke(action: str, args: dict, session: dict | None) -> dict:
     )
     ssl_context = _build_ssl_context(server_url)
     try:
-        with urllib.request.urlopen(req, context=ssl_context) as response:
+        # Scheme is validated above to allow only http/https.
+        with urllib.request.urlopen(req, context=ssl_context) as response:  # nosec B310
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:

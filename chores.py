@@ -203,36 +203,35 @@ def cmd_list_chores(args) -> None:
         return
     require_membership(session["user_id"], household_id)
 
-    conditions = ["c.household_id = ?"]
-    params     = [household_id]
-
-    if args.status:
-        conditions.append("c.status = ?")
-        params.append(args.status)
-
-    if args.mine:
-        conditions.append(
-            "EXISTS (SELECT 1 FROM chore_assignees ca WHERE ca.chore_id = c.id AND ca.user_id = ?)"
-        )
-        params.append(session["user_id"])
-
-    if args.overdue:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        conditions.append("c.due_date < ? AND c.status != 'complete'")
-        params.append(today)
-
-    where = " AND ".join(conditions)
+    status_filter = args.status
+    mine_filter = 1 if args.mine else 0
+    overdue_filter = 1 if args.overdue else 0
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     rows = query(
-        f"""SELECT c.id, c.title, c.status, c.due_date,
-                   GROUP_CONCAT(u.display_name, ', ') AS assignees,
-                   c.created_at
-            FROM chores c
-            LEFT JOIN chore_assignees ca ON ca.chore_id = c.id
-            LEFT JOIN users u ON u.id = ca.user_id
-            WHERE {where}
-            GROUP BY c.id, c.title, c.status, c.due_date, c.created_at
-            ORDER BY c.due_date NULLS LAST, c.created_at""",
-        tuple(params)
+        """SELECT c.id, c.title, c.status, c.due_date,
+                  GROUP_CONCAT(u.display_name, ', ') AS assignees,
+                  c.created_at
+           FROM chores c
+           LEFT JOIN chore_assignees ca ON ca.chore_id = c.id
+           LEFT JOIN users u ON u.id = ca.user_id
+           WHERE c.household_id = ?
+             AND (? IS NULL OR c.status = ?)
+             AND (? = 0 OR EXISTS (
+                    SELECT 1 FROM chore_assignees ca2
+                    WHERE ca2.chore_id = c.id AND ca2.user_id = ?
+                 ))
+             AND (? = 0 OR (c.due_date < ? AND c.status != 'complete'))
+           GROUP BY c.id, c.title, c.status, c.due_date, c.created_at
+           ORDER BY c.due_date NULLS LAST, c.created_at""",
+        (
+            household_id,
+            status_filter,
+            status_filter,
+            mine_filter,
+            session["user_id"],
+            overdue_filter,
+            today,
+        ),
     )
 
     if not rows:
