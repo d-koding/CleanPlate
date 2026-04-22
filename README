@@ -28,7 +28,7 @@ Python/OpenSSL build supports it.
 Persistent TLS Configuration
 ----------------------------
 
-Startup is now streamlined through a shared config file: [cleanplate.ini](/Users/dylanoconnor/develop/CleanPlate/cleanplate.ini)
+Startup is now streamlined through a shared config file: `cleanplate.ini`
 
 The default file configures:
 
@@ -201,8 +201,8 @@ forgot-password alice
 recover-password alice TOKEN_HERE
 household create "Maple House"
 household join aB3xQr_kLmN
-household show 1
-chore create 1 "Take out trash"
+household show "Maple House"
+chore create "Maple House" "Take out trash"
 chore assign 4 bob
 chore list 1
 chore show 4
@@ -237,12 +237,25 @@ Household Management
 
 ```text
 household create        [--name "42 Elm St"]
-household join          [--code <invite_code>]
-household show          [--id <household_id>]
+household join          [--code <invite_token>]
+household show          [--household <name>]
 household list
-household rotate-invite [--id <household_id>]
-household remove-member [--id <household_id>] [--username <name>]
+household leave         [--household <name>]
+household rename        [--household <name>] [--name <new_name>]
+household rotate-invite [--household <name>]
+household remove-member [--household <name>] [--username <name>]
+household promote       [--household <name>] [--username <name>]
+household demote        [--household <name>] [--username <name>]
+household send-invite   [--household <name>] [--email <email_or_username>]
 ```
+
+Notes:
+
+- invite tokens are personal (tied to a specific user) and expire after 5 minutes
+- admins use `send-invite` to email a token to a roommate by email address or username
+- `promote` / `demote` can also be run as flat commands: `promote <username>`
+- if the sole admin leaves, the longest-standing roommate is automatically promoted
+- if the last member leaves, the household is deleted
 
 Chore Management
 ----------------
@@ -292,12 +305,13 @@ EXAMPLE WALKTHROUGH
 
   cleanplate> login alice
   cleanplate> household create "42 Elm Street"
+  cleanplate> household send-invite "42 Elm Street" bob   (emails bob a personal token)
+
   cleanplate> login bob
-  ---
-  cleanplate> household join aB3xQr_kLmN
+  cleanplate> household join <token_from_email>
 
   cleanplate> login alice
-  cleanplate> chore create 1 "Vacuum living room" --due 2026-04-10 --assign bob --assign alice
+  cleanplate> chore create "42 Elm Street" "Vacuum living room" --due 2026-04-10 --assign bob --assign alice
 
   cleanplate> login bob
   cleanplate> activity complete 1
@@ -372,7 +386,7 @@ Usernames:
 Password recovery:
 
 - recovery uses one-time reset tokens stored as hashes
-- tokens expire after 15 minutes
+- tokens expire after 5 minutes
 - prototype mode currently prints the token instead of sending email
 
 Audit log:
