@@ -1489,6 +1489,64 @@ class TestActivity(cleanplateTestCase):
         self.assertIn("Chain integrity verified", out)
         self.assertIn("chore.complete", out)
 
+    def test_audit_hides_sensitive_entries_from_roommates(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "invite.sent",
+            {"email": "roommate@example.com"},
+        )
+        self.login_as("bob")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertNotIn("invite.sent", out)
+        self.assertNotIn("hash=", out)
+
+    def test_admin_audit_shows_sensitive_entries_and_hash_preview(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "invite.sent",
+            {"email": "roommate@example.com"},
+        )
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertIn("invite.sent", out)
+        self.assertIn("hash=", out)
+
+    def test_audit_hides_auth_entries_from_roommates(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "auth.login",
+            {"display_name": "alice"},
+        )
+        self.login_as("bob")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertNotIn("auth.login", out)
+
+    def test_admin_audit_shows_auth_entries(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "auth.login",
+            {"display_name": "alice"},
+        )
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertIn("auth.login", out)
+
 
 # ---------------------------------------------------------------------------
 # CLI parser tests
@@ -1597,6 +1655,13 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.command, "activity")
         self.assertEqual(args.activity_cmd, "complete")
         self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
+
+    def test_build_parser_parses_flat_poll_alias(self):
+        parser = main.build_parser()
+        args = parser.parse_args(["poll"])
+
+        self.assertEqual(args.command, "poll")
         self.assertTrue(callable(args.func))
 
     def test_build_command_parser_parses_reschedule_command(self):

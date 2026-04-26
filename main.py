@@ -195,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     demote.add_argument("--household", required=True, help="Household name")
     demote.set_defaults(func=client_cli.cmd_demote_member)
 
+    poll = subparsers.add_parser("poll", aliases=["notifications"], help="View unread notifications")
+    poll.set_defaults(func=client_cli.cmd_poll)
+
     return parser
 
 
