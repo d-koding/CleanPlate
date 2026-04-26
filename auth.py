@@ -15,8 +15,14 @@ Password strength requirements:
   - zxcvbn score ≥ 2 out of 4 ("fair" or better)
   - interactive prompts loop and display zxcvbn feedback until the requirement is met
 
-TODO:
-Username should be HMAC
+Audit events emitted (via _record_auth_event → activity.record):
+  - auth.login                    — successful login
+  - auth.login_lockout            — account locked after too many failed attempts
+  - auth.password_reset_requested — forgot-password token issued
+  - auth.password_recovered       — recover-password completed successfully
+  - auth.password_changed         — reset-password (in-session) completed successfully
+  - auth.email_verified           — email verification code accepted
+  - auth.verification_resent      — resend-verification sent a new code
 
 """
 
@@ -376,6 +382,7 @@ def _record_failed_login(user_id: int, attempts: int) -> None:
                WHERE id = ?""",
             (locked_until, user_id),
         )
+        _record_auth_event(user_id, "auth.login_lockout", {"locked_until": locked_until})
         return
 
     execute(
@@ -393,6 +400,20 @@ def _clear_login_failures(user_id: int) -> None:
            WHERE id = ?""",
         (user_id,),
     )
+
+
+def _record_auth_event(user_id: int, action: str, details: dict) -> None:
+    """Log an auth event to every household the user belongs to."""
+    try:
+        from activity import record
+        memberships = query("SELECT household_id FROM members WHERE user_id = ?", (user_id,))
+        for m in memberships:
+            try:
+                record(m["household_id"], user_id, action, details)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _validate_username(username: str | None) -> str | None:
@@ -570,6 +591,7 @@ def cmd_login(args) -> None:
         print("Error: could not save session.")
         return
 
+    _record_auth_event(row["id"], "auth.login", {"display_name": row["display_name"]})
     print(f"Logged in as '{row['display_name']}'.")
 
 
@@ -604,6 +626,7 @@ def cmd_verify_email(args) -> None:
     execute("UPDATE users SET email_verified = 1 WHERE id = ?", (row["user_id"],))
     execute("DELETE FROM email_verifications WHERE user_id = ?", (row["user_id"],))
 
+    _record_auth_event(row["user_id"], "auth.email_verified", {})
     print(f"Email verified. Welcome, {row['display_name']}! You can now log in.")
 
 
@@ -637,6 +660,7 @@ def cmd_resend_verification(args) -> None:
     try:
         code = _issue_verification_code(row["id"])
         _send_verification_email(row["email"], code)
+        _record_auth_event(row["id"], "auth.verification_resent", {})
         print(f"Verification code resent to {row['email']}.")
     except Exception as e:
         print(f"Error: could not send email: {e}")
@@ -716,6 +740,7 @@ def cmd_reset_password(args) -> None:
         print("Error: could not update password. Please try again.")
         return
 
+    _record_auth_event(row["id"], "auth.password_changed", {})
     print(f"Password updated for '{username}'.")
 
 
@@ -755,6 +780,8 @@ def cmd_forgot_password(args) -> None:
         print("Error: could not create reset token. Please try again.")
         return
 
+    _record_auth_event(row["id"], "auth.password_reset_requested", {})
+
     email = row["email"]
     body = (
         f"Hi,\n\n"
@@ -772,7 +799,7 @@ def cmd_forgot_password(args) -> None:
         print("If that account exists, a password reset token has been issued.")
         print("Prototype mode: share this token directly with the user.")
         print(f"Reset token: {token}")
-        print("This token expires in 15 minutes.")
+        print("This token expires in 5 minutes.")
 
 
 def cmd_recover_password(args) -> None:
@@ -875,6 +902,7 @@ def cmd_recover_password(args) -> None:
         print("Error: could not update password. Please try again.")
         return
 
+    _record_auth_event(row["id"], "auth.password_recovered", {})
     print(f"Password recovered for '{username}'. You can now log in.")
 
 

@@ -395,6 +395,8 @@ Audit log:
 - `verify_chain()` detects tampering
 - server key must come from `CLEANPLATE_AUDIT_HMAC_KEY`
 - `AUDIT_HMAC_KEY` is also accepted for compatibility
+- covers all household actions: create, rename, join, leave, remove, promote, demote, rotate-invite, chore lifecycle, complaints
+- also covers auth events per household: login, lockout, password reset/recovery/change, email verification
 
 Sessions:
 

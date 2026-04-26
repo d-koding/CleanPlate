@@ -5,11 +5,15 @@ Owner: Person 2
 Responsibilities:
   - Create a household (creator becomes admin)
   - Generate and rotate invite codes
-  - Join a household using an invite code
+  - Join a household using a personal invite token (user-specific, 5-minute expiry)
   - List members, show household info
   - Remove a member (admin only)
+  - Leave a household (auto-promotes successor if sole admin)
+  - Rename a household (admin only)
+  - Promote / demote members (admin only)
+  - Send personal invite tokens by email or username (admin only)
 
-Standard library only: secrets
+Standard library only: secrets, hashlib
 """
 
 import hashlib
@@ -332,7 +336,7 @@ def cmd_join_household(args) -> None:
 
     from activity import record
     record(household_id, session["user_id"], "membership.join",
-           {"username": session["username"]})
+           {"username": session["username"], "method": "personal_token"})
 
     print(f"Joined '{token_row['name']}' as a roommate.")
 
@@ -480,7 +484,7 @@ def cmd_remove_member(args) -> None:
             household_id,
             session["user_id"],
             "membership.remove",
-            {"removed_username": args.username},
+            {"removed_username": args.username, "chore_assignments_cleared": True},
             conn=conn,
         )
         if promoted_username is not None:
@@ -529,9 +533,12 @@ def cmd_leave_household(args) -> None:
                 household_id,
                 session["user_id"],
                 "membership.leave",
-                {"username": session["username"]},
+                {"username": session["username"], "chore_assignments_cleared": True},
                 conn=conn,
             )
+            # Note: when household_deleted is True, the audit log is deleted
+            # along with the household in the same transaction, so there is
+            # nowhere to record a household.deleted event.
             if promoted_username is not None and membership["role"] == "admin":
                 record(
                     household_id,
