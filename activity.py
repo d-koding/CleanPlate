@@ -174,6 +174,12 @@ def verify_chain(household_id: int) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _matches_audit_filters(entry, *, action: str | None, actor: str | None) -> bool:
+    if action is not None and entry["action"].lower() != action.lower():
+        return False
+    if actor is not None and entry["username"].lower() != actor.lower():
+        return False
+    return True
 def _can_membership_role_view_action(role: str, action: str) -> bool:
     if role == "admin":
         return True
@@ -487,13 +493,19 @@ def cmd_audit(args) -> None:
         (household_id,)
     )
 
+    action_filter = getattr(args, "action", None)
+    actor_filter = getattr(args, "actor", None)
+    limit = getattr(args, "limit", None)
+
     entries = [
         entry for entry in all_entries
-        if _can_membership_role_view_action(membership["role"], entry["action"])
+        if _matches_audit_filters(entry, action=action_filter, actor=actor_filter)
     ]
+    if limit is not None:
+        entries = entries[:limit]
 
     if not entries:
-        print("No visible audit entries.")
+        print("No matching audit entries.")
         return
 
     for e in entries:
@@ -570,6 +582,9 @@ def register_subparsers(subparsers) -> None:
     # audit
     c = sub.add_parser("audit", help="View audit log for a household")
     c.add_argument("--household", required=True, metavar="HOUSEHOLD_NAME")
+    c.add_argument("--action", default=None, metavar="ACTION")
+    c.add_argument("--actor", default=None, metavar="USERNAME")
+    c.add_argument("--limit", type=int, default=None, metavar="N")
     c.set_defaults(func=cmd_audit)
 
     # poll
