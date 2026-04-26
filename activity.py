@@ -24,6 +24,10 @@ from session import require_session
 
 
 _AUDIT_LOCK = threading.RLock()
+_MEMBER_VISIBLE_ACTION_PREFIXES = ("chore.", "complaint.", "membership.")
+_MEMBER_VISIBLE_ACTIONS = {"household.create", "household.rename"}
+_ADMIN_ONLY_ACTION_PREFIXES = ("auth.", "invite.")
+_ADMIN_ONLY_ACTIONS = {"household.delete"}
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +172,16 @@ def verify_chain(household_id: int) -> tuple[bool, str]:
         expected_prev = e["entry_hash"]
 
     return True, "OK"
+
+
+def _can_membership_role_view_action(role: str, action: str) -> bool:
+    if role == "admin":
+        return True
+    if action in _ADMIN_ONLY_ACTIONS or action.startswith(_ADMIN_ONLY_ACTION_PREFIXES):
+        return False
+    if action in _MEMBER_VISIBLE_ACTIONS or action.startswith(_MEMBER_VISIBLE_ACTION_PREFIXES):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +479,7 @@ def cmd_audit(args) -> None:
     else:
         print(f"⚠ CHAIN INTEGRITY FAILED: {msg}\n")
 
-    entries = query(
+    all_entries = query(
         """SELECT a.seq, a.timestamp, u.display_name AS username, a.action, a.details, a.entry_hash
            FROM audit_log a JOIN users u ON u.id = a.actor_id
            WHERE a.household_id = ?
@@ -473,8 +487,13 @@ def cmd_audit(args) -> None:
         (household_id,)
     )
 
+    entries = [
+        entry for entry in all_entries
+        if _can_membership_role_view_action(membership["role"], entry["action"])
+    ]
+
     if not entries:
-        print("No audit entries yet.")
+        print("No visible audit entries.")
         return
 
     for e in entries:
