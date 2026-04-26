@@ -1,1 +1,2 @@
 pytest>=7.0
+zxcvbn>=4.5.0

@@ -410,6 +410,11 @@ def cmd_audit(args) -> None:
     )
 
 
+def cmd_verify_audit(args) -> None:
+    household_id = args.household if args.household is not None else _prompt_text("Household name: ")
+    _remote_command("activity.verify-audit", {"household": household_id})
+
+
 def cmd_poll(args) -> None:
     _remote_command("activity.poll", {})
 
@@ -606,6 +611,10 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--actor", default=None, metavar="USERNAME")
     c.add_argument("--limit", type=int, default=None, metavar="N")
     c.set_defaults(func=cmd_audit)
+
+    c = sub.add_parser("verify-audit", help="Verify audit log integrity for a household")
+    c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    c.set_defaults(func=cmd_verify_audit)
 
     c = sub.add_parser("poll", help="View unread notifications")
     c.set_defaults(func=cmd_poll)

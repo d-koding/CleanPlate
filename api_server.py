@@ -56,6 +56,7 @@ COMMANDS = {
     "activity.dispute": activity.cmd_dispute,
     "activity.resolve": activity.cmd_resolve,
     "activity.audit": activity.cmd_audit,
+    "activity.verify-audit": activity.cmd_verify_audit,
     "activity.poll": activity.cmd_poll,
 }
 

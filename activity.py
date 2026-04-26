@@ -144,13 +144,17 @@ def record(
             )
 
 
-def verify_chain(household_id: int) -> tuple[bool, str]:
+def verify_chain_report(household_id: int) -> dict:
     """
-    Walk every audit entry for the household and recompute its HMAC.
-    Returns (True, "OK") or (False, "<description of first violation>").
+    Verify the audit chain and return structured details.
 
-    TODO (Person 4): Call this automatically before displaying the log
-    so admins always see the chain status without having to ask.
+    Keys:
+      - ok: bool
+      - total_entries: int
+      - checked_entries: int
+      - failure_seq: int | None
+      - failure_type: str | None
+      - message: str
     """
     key = _get_or_create_hmac_key()
     entries = query(
@@ -159,19 +163,68 @@ def verify_chain(household_id: int) -> tuple[bool, str]:
     )
 
     expected_prev = "0" * 64
+    checked_entries = 0
     for e in entries:
         if e["prev_hash"] != expected_prev:
-            return False, (f"Entry #{e['seq']}: prev_hash mismatch — "
-                           "an entry may have been inserted or deleted")
+            return {
+                "ok": False,
+                "total_entries": len(entries),
+                "checked_entries": checked_entries,
+                "failure_seq": e["seq"],
+                "failure_type": "prev_hash mismatch",
+                "message": "previous link does not match expected hash",
+            }
         recomputed = _compute_entry_hash(
             key, e["household_id"], e["seq"], e["timestamp"],
             e["actor_id"], e["action"], e["details"], e["prev_hash"]
         )
         if not hmac.compare_digest(recomputed, e["entry_hash"]):
-            return False, f"Entry #{e['seq']}: HMAC mismatch — entry data has been altered"
+            return {
+                "ok": False,
+                "total_entries": len(entries),
+                "checked_entries": checked_entries,
+                "failure_seq": e["seq"],
+                "failure_type": "entry HMAC mismatch",
+                "message": "stored entry hash does not match recomputed HMAC",
+            }
+        checked_entries += 1
         expected_prev = e["entry_hash"]
 
-    return True, "OK"
+    return {
+        "ok": True,
+        "total_entries": len(entries),
+        "checked_entries": checked_entries,
+        "failure_seq": None,
+        "failure_type": None,
+        "message": "OK",
+    }
+
+
+def verify_chain(household_id: int) -> tuple[bool, str]:
+    """
+    Walk every audit entry for the household and recompute its HMAC.
+    Returns (True, "OK") or (False, "<description of first violation>").
+
+    TODO (Person 4): Call this automatically before displaying the log
+    so admins always see the chain status without having to ask.
+    """
+    report = verify_chain_report(household_id)
+    if report["ok"]:
+        return True, "OK"
+    return False, f"Entry #{report['failure_seq']}: {report['failure_type']} — {report['message']}"
+
+
+def _print_verify_report(report: dict) -> None:
+    if report["ok"]:
+        print("✓ Chain integrity verified — log has not been tampered with.")
+        print(f"Total entries checked: {report['checked_entries']}")
+        return
+
+    print("⚠ CHAIN INTEGRITY FAILED")
+    print(f"Total entries checked before failure: {report['checked_entries']} of {report['total_entries']}")
+    print(f"First failing sequence: #{report['failure_seq']}")
+    print(f"Failure type: {report['failure_type']}")
+    print(f"Details: {report['message']}")
 
 
 def _matches_audit_filters(entry, *, action: str | None, actor: str | None) -> bool:
@@ -479,11 +532,9 @@ def cmd_audit(args) -> None:
     require_membership(session["user_id"], household_id)
     membership = get_membership(session["user_id"], household_id)
 
-    ok, msg = verify_chain(household_id)
-    if ok:
-        print("✓ Chain integrity verified — log has not been tampered with.\n")
-    else:
-        print(f"⚠ CHAIN INTEGRITY FAILED: {msg}\n")
+    report = verify_chain_report(household_id)
+    _print_verify_report(report)
+    print()
 
     all_entries = query(
         """SELECT a.seq, a.timestamp, u.display_name AS username, a.action, a.details, a.entry_hash
@@ -517,6 +568,20 @@ def cmd_audit(args) -> None:
         # Only show hash previews to admins
         if membership["role"] == "admin":
             print(f"       hash={hash_preview}")
+
+
+def cmd_verify_audit(args) -> None:
+    """
+    Verify audit-chain integrity for a household.
+    Usage: python main.py activity verify-audit --household "Maple House"
+    """
+    session = require_session()
+    household_id = _resolve_household_id(session, args.household)
+    if household_id is None:
+        return
+    require_membership(session["user_id"], household_id)
+    report = verify_chain_report(household_id)
+    _print_verify_report(report)
 
 
 def cmd_poll(args) -> None:
@@ -586,6 +651,11 @@ def register_subparsers(subparsers) -> None:
     c.add_argument("--actor", default=None, metavar="USERNAME")
     c.add_argument("--limit", type=int, default=None, metavar="N")
     c.set_defaults(func=cmd_audit)
+
+    # verify-audit
+    c = sub.add_parser("verify-audit", help="Verify audit log chain for a household")
+    c.add_argument("--household", required=True, metavar="HOUSEHOLD_NAME")
+    c.set_defaults(func=cmd_verify_audit)
 
     # poll
     c = sub.add_parser("poll", help="View unread notifications")

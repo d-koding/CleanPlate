@@ -90,7 +90,7 @@ def _normalize_interactive_argv(argv: list[str]) -> list[str]:
             return [group, subcommand, "--chore", argv[2], *argv[3:]]
         if subcommand == "resolve" and len(argv) >= 3 and not argv[2].startswith("-"):
             return [group, subcommand, "--complaint", argv[2], *argv[3:]]
-        if subcommand == "audit" and len(argv) >= 3 and not argv[2].startswith("-"):
+        if subcommand in {"audit", "verify-audit"} and len(argv) >= 3 and not argv[2].startswith("-"):
             return [group, subcommand, "--household", argv[2], *argv[3:]]
 
     return argv

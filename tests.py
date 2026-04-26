@@ -1470,7 +1470,7 @@ class TestActivity(cleanplateTestCase):
 
         ok, msg = activity.verify_chain(self.household["id"])
         self.assertFalse(ok)
-        self.assertIn("HMAC mismatch", msg)
+        self.assertIn("entry HMAC mismatch", msg)
 
     def test_audit_key_must_come_from_environment(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -1487,7 +1487,25 @@ class TestActivity(cleanplateTestCase):
             Namespace(household=self.household["id"]),
         )
         self.assertIn("Chain integrity verified", out)
+        self.assertIn("Total entries checked: 1", out)
         self.assertIn("chore.complete", out)
+
+    def test_verify_audit_command_prints_first_failure_details(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        db.execute(
+            "UPDATE audit_log SET details = ? WHERE household_id = ? AND seq = 1",
+            ('{"tampered": true}', self.household["id"]),
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_verify_audit,
+            Namespace(household=self.household["id"]),
+        )
+        self.assertIn("CHAIN INTEGRITY FAILED", out)
+        self.assertIn("First failing sequence: #1", out)
+        self.assertIn("Failure type: entry HMAC mismatch", out)
 
     def test_audit_can_filter_by_action(self):
         activity.record(
@@ -2021,6 +2039,16 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.action, "chore.complete")
         self.assertEqual(args.actor, "alice")
         self.assertEqual(args.limit, 5)
+
+    def test_build_command_parser_parses_activity_verify_audit_command(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(["activity", "verify-audit", "--household", "Maple House"])
+
+        self.assertEqual(args.command, "activity")
+        self.assertEqual(args.activity_cmd, "verify-audit")
+        self.assertEqual(args.household, "Maple House")
+        self.assertTrue(callable(args.func))
+
     def test_build_parser_parses_flat_poll_alias(self):
         parser = main.build_parser()
         args = parser.parse_args(["poll"])
@@ -2078,6 +2106,12 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(
             main._normalize_interactive_argv(["activity", "complete", "4"]),
             ["activity", "complete", "--chore", "4"],
+        )
+
+    def test_normalize_interactive_argv_supports_activity_verify_audit_shorthand(self):
+        self.assertEqual(
+            main._normalize_interactive_argv(["activity", "verify-audit", "Maple House"]),
+            ["activity", "verify-audit", "--household", "Maple House"],
         )
 
     def test_normalize_interactive_argv_supports_create_chore_phrase(self):
