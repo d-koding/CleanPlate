@@ -587,8 +587,8 @@ def cmd_login(args) -> None:
     try:
         _clear_login_failures(row["id"])
         save_session(row["id"], row["display_name"])
-    except Exception:
-        print("Error: could not save session.")
+    except Exception as exc:
+        print(f"Error: could not save session ({exc}).")
         return
 
     _record_auth_event(row["id"], "auth.login", {"display_name": row["display_name"]})
