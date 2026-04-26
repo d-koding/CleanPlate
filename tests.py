@@ -1489,6 +1489,60 @@ class TestActivity(cleanplateTestCase):
         self.assertIn("Chain integrity verified", out)
         self.assertIn("chore.complete", out)
 
+    def test_audit_can_filter_by_action(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "membership.join",
+            {"username": "bob"},
+        )
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"], action="chore.complete", actor=None, limit=None),
+        )
+        self.assertIn("chore.complete", out)
+        self.assertNotIn("membership.join", out)
+
+    def test_audit_can_filter_by_actor(self):
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "membership.promote",
+            {"username": "bob"},
+        )
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"], action=None, actor="alice", limit=None),
+        )
+        self.assertIn("membership.promote", out)
+        self.assertNotIn("chore.complete", out)
+
+    def test_audit_can_limit_results(self):
+        activity.record(
+            self.household["id"],
+            self.alice_id,
+            "membership.join",
+            {"username": "bob"},
+        )
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=self.chore["id"]))
+
+        self.login_as("alice")
+        out = self.capture_output(
+            activity.cmd_audit,
+            Namespace(household=self.household["id"], action=None, actor=None, limit=1),
+        )
+        self.assertIn("chore.complete", out)
+        self.assertNotIn("membership.join", out)
+
 
 # ---------------------------------------------------------------------------
 # CLI parser tests
@@ -1597,6 +1651,20 @@ class TestMainParser(cleanplateTestCase):
         self.assertEqual(args.command, "activity")
         self.assertEqual(args.activity_cmd, "complete")
         self.assertEqual(args.chore, 4)
+        self.assertTrue(callable(args.func))
+
+    def test_build_command_parser_parses_nested_audit_filters(self):
+        parser = main.build_command_parser()
+        args = parser.parse_args(
+            ["activity", "audit", "--household", "Maple House", "--action", "chore.complete", "--actor", "alice", "--limit", "5"]
+        )
+
+        self.assertEqual(args.command, "activity")
+        self.assertEqual(args.activity_cmd, "audit")
+        self.assertEqual(args.household, "Maple House")
+        self.assertEqual(args.action, "chore.complete")
+        self.assertEqual(args.actor, "alice")
+        self.assertEqual(args.limit, 5)
         self.assertTrue(callable(args.func))
 
     def test_build_command_parser_parses_reschedule_command(self):

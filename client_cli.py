@@ -399,7 +399,15 @@ def cmd_resolve(args) -> None:
 
 def cmd_audit(args) -> None:
     household_id = args.household if args.household is not None else _prompt_text("Household name: ")
-    _remote_command("activity.audit", {"household": household_id})
+    _remote_command(
+        "activity.audit",
+        {
+            "household": household_id,
+            "action": args.action,
+            "actor": args.actor,
+            "limit": args.limit,
+        },
+    )
 
 
 def cmd_poll(args) -> None:
@@ -594,6 +602,9 @@ def register_subparsers(subparsers) -> None:
 
     c = sub.add_parser("audit", help="View audit log for a household")
     c.add_argument("--household", default=None, metavar="HOUSEHOLD_NAME")
+    c.add_argument("--action", default=None, metavar="ACTION")
+    c.add_argument("--actor", default=None, metavar="USERNAME")
+    c.add_argument("--limit", type=int, default=None, metavar="N")
     c.set_defaults(func=cmd_audit)
 
     c = sub.add_parser("poll", help="View unread notifications")
