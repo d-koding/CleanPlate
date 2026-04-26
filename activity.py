@@ -24,6 +24,10 @@ from session import require_session
 
 
 _AUDIT_LOCK = threading.RLock()
+_MEMBER_VISIBLE_ACTION_PREFIXES = ("chore.", "complaint.", "membership.")
+_MEMBER_VISIBLE_ACTIONS = {"household.create", "household.rename"}
+_ADMIN_ONLY_ACTION_PREFIXES = ("auth.", "invite.")
+_ADMIN_ONLY_ACTIONS = {"household.delete"}
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +180,14 @@ def _matches_audit_filters(entry, *, action: str | None, actor: str | None) -> b
     if actor is not None and entry["username"].lower() != actor.lower():
         return False
     return True
+def _can_membership_role_view_action(role: str, action: str) -> bool:
+    if role == "admin":
+        return True
+    if action in _ADMIN_ONLY_ACTIONS or action.startswith(_ADMIN_ONLY_ACTION_PREFIXES):
+        return False
+    if action in _MEMBER_VISIBLE_ACTIONS or action.startswith(_MEMBER_VISIBLE_ACTION_PREFIXES):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

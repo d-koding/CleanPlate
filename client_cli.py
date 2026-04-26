@@ -609,3 +609,6 @@ def register_subparsers(subparsers) -> None:
 
     c = sub.add_parser("poll", help="View unread notifications")
     c.set_defaults(func=cmd_poll)
+
+    p = subparsers.add_parser("poll", aliases=["notifications"], help="View unread notifications (flat alias)")
+    p.set_defaults(func=cmd_poll)
