@@ -1549,6 +1549,305 @@ class TestActivity(cleanplateTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Audit coverage tests
+# ---------------------------------------------------------------------------
+
+class TestAuditCoverage(cleanplateTestCase):
+    """
+    Verifies that every audited action is recorded with the correct action
+    string and expected details payload, and that the HMAC chain remains
+    valid throughout complex sequences.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.alice_id = self.create_user("alice")
+        self.bob_id = self.create_user("bob")
+        self.cara_id = self.create_user("cara")
+
+        self.login_as("alice")
+        self.capture_output(households.cmd_create_household, Namespace(name="Audit House"))
+        self.household = self.get_household_by_name("Audit House")
+
+    def _audit(self, action: str) -> list:
+        return db.query(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ? ORDER BY seq",
+            (self.household["id"], action),
+        )
+
+    def _audit_one(self, action: str):
+        return db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ? ORDER BY seq DESC",
+            (self.household["id"], action),
+        )
+
+    def _details(self, row) -> dict:
+        import json
+        return json.loads(row["details"])
+
+    # ------------------------------------------------------------------
+    # Membership events
+    # ------------------------------------------------------------------
+
+    def test_membership_join_records_action_and_details(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        row = self._audit_one("membership.join")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["username"], "bob")
+        self.assertEqual(details["method"], "personal_token")
+
+    def test_membership_remove_records_action_and_details(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_remove_member,
+            Namespace(household="Audit House", username="bob"),
+        )
+
+        row = self._audit_one("membership.remove")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["removed_username"], "bob")
+        self.assertTrue(details["chore_assignments_cleared"])
+
+    def test_membership_leave_records_action_and_details(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        self.login_as("bob")
+        self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Audit House"),
+        )
+
+        row = self._audit_one("membership.leave")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["username"], "bob")
+        self.assertTrue(details["chore_assignments_cleared"])
+
+    def test_membership_promote_records_action_and_details(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_promote_member,
+            Namespace(household="Audit House", username="bob"),
+        )
+
+        row = self._audit_one("membership.promote")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["username"], "bob")
+
+    def test_membership_demote_records_action_and_details(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_promote_member,
+            Namespace(household="Audit House", username="bob"),
+        )
+        self.capture_output(
+            households.cmd_demote_member,
+            Namespace(household="Audit House", username="bob"),
+        )
+
+        row = self._audit_one("membership.demote")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["username"], "bob")
+
+    def test_sole_admin_leave_records_leave_and_auto_promote(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Audit House"),
+        )
+
+        leave_row = self._audit_one("membership.leave")
+        promote_row = self._audit_one("membership.promote")
+        self.assertIsNotNone(leave_row)
+        self.assertIsNotNone(promote_row)
+        self.assertEqual(self._details(promote_row)["reason"], "admin_departure")
+
+    # ------------------------------------------------------------------
+    # Household events
+    # ------------------------------------------------------------------
+
+    def test_household_create_records_action_and_details(self):
+        row = self._audit_one("household.create")
+        self.assertIsNotNone(row)
+        self.assertEqual(self._details(row)["name"], "Audit House")
+
+    def test_household_rename_records_old_and_new_name(self):
+        self.capture_output(
+            households.cmd_rename_household,
+            Namespace(household="Audit House", name="Renamed House"),
+        )
+
+        row = self._audit_one("household.rename")
+        self.assertIsNotNone(row)
+        details = self._details(row)
+        self.assertEqual(details["old_name"], "Audit House")
+        self.assertEqual(details["new_name"], "Renamed House")
+
+    def test_invite_rotate_records_action(self):
+        self.capture_output(
+            households.cmd_rotate_invite,
+            Namespace(household="Audit House"),
+        )
+
+        row = self._audit_one("invite.rotate")
+        self.assertIsNotNone(row)
+
+    # ------------------------------------------------------------------
+    # Auth events
+    # ------------------------------------------------------------------
+
+    def test_auth_login_recorded_in_household_audit(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        # Trigger a real login via the command to exercise _record_auth_event
+        auth.cmd_login(Namespace(username="bob", password="GoodPass!123"))
+
+        row = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ? AND actor_id = ?",
+            (self.household["id"], "auth.login", self.bob_id),
+        )
+        self.assertIsNotNone(row)
+        self.assertEqual(self._details(row)["display_name"], "bob")
+
+    def test_auth_password_changed_recorded_in_household_audit(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        auth.cmd_reset_password(Namespace(
+            username="bob",
+            current_password="GoodPass!123",
+            new_password="NewerPass!456",
+            confirm_password="NewerPass!456",
+        ))
+
+        row = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ? AND actor_id = ?",
+            (self.household["id"], "auth.password_changed", self.bob_id),
+        )
+        self.assertIsNotNone(row)
+
+    def test_auth_login_lockout_recorded_in_household_audit(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+
+        # Trigger lockout by exhausting failed attempts
+        for _ in range(auth.MAX_FAILED_LOGIN_ATTEMPTS):
+            auth.cmd_login(Namespace(username="bob", password="wrongpassword"))
+
+        row = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ? AND actor_id = ?",
+            (self.household["id"], "auth.login_lockout", self.bob_id),
+        )
+        self.assertIsNotNone(row)
+        self.assertIn("locked_until", self._details(row))
+
+    # ------------------------------------------------------------------
+    # Chain integrity
+    # ------------------------------------------------------------------
+
+    def test_chain_valid_after_mixed_action_sequence(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+        self.login_as("cara")
+        self.join_household(self.cara_id, self.household["id"])
+
+        self.login_as("alice")
+        self.capture_output(households.cmd_promote_member,
+                            Namespace(household="Audit House", username="bob"))
+        self.capture_output(households.cmd_rename_household,
+                            Namespace(household="Audit House", name="Mixed House"))
+
+        self.login_as("alice")
+        self.capture_output(
+            chores.cmd_create_chore,
+            Namespace(household="Mixed House", title="Sweep", description="",
+                      due=None, assign=["bob"]),
+        )
+        chore = self.get_chore_by_title("Sweep")
+        self.login_as("bob")
+        self.capture_output(activity.cmd_complete, Namespace(chore=chore["id"]))
+
+        ok, msg = activity.verify_chain(self.household["id"])
+        self.assertTrue(ok, msg)
+
+    def test_no_duplicate_seq_numbers(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+        self.login_as("cara")
+        self.join_household(self.cara_id, self.household["id"])
+
+        rows = db.query(
+            "SELECT seq FROM audit_log WHERE household_id = ? ORDER BY seq",
+            (self.household["id"],),
+        )
+        seqs = [r["seq"] for r in rows]
+        self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
+
+    def test_chain_valid_after_member_removed(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_remove_member,
+            Namespace(household="Audit House", username="bob"),
+        )
+
+        ok, msg = activity.verify_chain(self.household["id"])
+        self.assertTrue(ok, msg)
+
+    def test_chain_valid_after_sole_admin_leaves(self):
+        self.login_as("bob")
+        self.join_household(self.bob_id, self.household["id"])
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Audit House"),
+        )
+
+        ok, msg = activity.verify_chain(self.household["id"])
+        self.assertTrue(ok, msg)
+
+    def test_household_deleted_when_last_member_leaves_removes_audit_log(self):
+        self.login_as("alice")
+        self.capture_output(
+            households.cmd_leave_household,
+            Namespace(household="Audit House"),
+        )
+
+        # Household should be gone
+        deleted = db.query_one(
+            "SELECT * FROM households WHERE id = ?", (self.household["id"],)
+        )
+        self.assertIsNone(deleted)
+
+        # Audit log should be gone with it
+        entries = db.query(
+            "SELECT * FROM audit_log WHERE household_id = ?", (self.household["id"],)
+        )
+        self.assertEqual(len(entries), 0)
+
+
+# ---------------------------------------------------------------------------
 # CLI parser tests
 # ---------------------------------------------------------------------------
 
