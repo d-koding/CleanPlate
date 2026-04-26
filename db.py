@@ -95,7 +95,9 @@ def init_db() -> None:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 name        TEXT    NOT NULL,
                 invite_code TEXT    NOT NULL UNIQUE,
-                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                deleted_at  TEXT,
+                deleted_by  INTEGER
             );
 
             -- Membership (user <-> household, with role) ----------------------
@@ -212,6 +214,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0")
         if "locked_until" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+
+        household_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(households)").fetchall()
+        }
+        if "deleted_at" not in household_columns:
+            conn.execute("ALTER TABLE households ADD COLUMN deleted_at TEXT")
+        if "deleted_by" not in household_columns:
+            conn.execute("ALTER TABLE households ADD COLUMN deleted_by INTEGER")
         # Grandfather existing accounts that predate email verification
         conn.execute("UPDATE users SET email_verified = 1 WHERE email IS NULL OR email = ''")
 

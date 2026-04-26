@@ -19,6 +19,7 @@ Standard library only: secrets, hashlib
 import hashlib
 import secrets
 import sqlite3
+from datetime import datetime, timezone
 
 from auth import _find_user_by_username, _send_email
 from db import execute, execute_tx, query, query_one, query_one_tx, transaction
@@ -170,7 +171,7 @@ def _user_has_household_named(user_id: int, household_name: str) -> bool:
         """SELECT 1
            FROM members m
            JOIN households h ON h.id = m.household_id
-           WHERE m.user_id = ? AND h.name = ?""",
+           WHERE m.user_id = ? AND h.name = ? AND h.deleted_at IS NULL""",
         (user_id, household_name),
     )
     return row is not None
@@ -189,6 +190,7 @@ def _member_with_name_conflict(household_id: int, new_name: str) -> sqlite3.Row 
                  WHERE other_m.user_id = m.user_id
                    AND other_m.household_id != ?
                    AND other_h.name = ?
+                   AND other_h.deleted_at IS NULL
              )
            ORDER BY m.joined_at ASC, m.id ASC
            LIMIT 1""",
@@ -211,10 +213,11 @@ def _cleanup_member_assignments(household_id: int, user_id: int, *, conn) -> Non
     )
 
 
-def _delete_household_if_empty(household_id: int, *, conn=None) -> bool:
+def _dissolve_household_if_empty(household_id: int, deleted_by: int, *, conn=None) -> bool:
     if _count_members(household_id, conn=conn) != 0:
         return False
 
+    deleted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     if conn is None:
         execute(
             """DELETE FROM complaints
@@ -222,9 +225,12 @@ def _delete_household_if_empty(household_id: int, *, conn=None) -> bool:
             (household_id,),
         )
         execute("DELETE FROM notifications WHERE household_id = ?", (household_id,))
-        execute("DELETE FROM audit_log WHERE household_id = ?", (household_id,))
+        execute("DELETE FROM household_invites WHERE household_id = ?", (household_id,))
         execute("DELETE FROM chores WHERE household_id = ?", (household_id,))
-        execute("DELETE FROM households WHERE id = ?", (household_id,))
+        execute(
+            "UPDATE households SET deleted_at = ?, deleted_by = ? WHERE id = ?",
+            (deleted_at, deleted_by, household_id),
+        )
     else:
         execute_tx(
             conn,
@@ -233,9 +239,13 @@ def _delete_household_if_empty(household_id: int, *, conn=None) -> bool:
             (household_id,),
         )
         execute_tx(conn, "DELETE FROM notifications WHERE household_id = ?", (household_id,))
-        execute_tx(conn, "DELETE FROM audit_log WHERE household_id = ?", (household_id,))
+        execute_tx(conn, "DELETE FROM household_invites WHERE household_id = ?", (household_id,))
         execute_tx(conn, "DELETE FROM chores WHERE household_id = ?", (household_id,))
-        execute_tx(conn, "DELETE FROM households WHERE id = ?", (household_id,))
+        execute_tx(
+            conn,
+            "UPDATE households SET deleted_at = ?, deleted_by = ? WHERE id = ?",
+            (deleted_at, deleted_by, household_id),
+        )
     return True
 
 
@@ -302,6 +312,7 @@ def cmd_join_household(args) -> None:
            FROM household_invites hi
            JOIN households h ON h.id = hi.household_id
            WHERE hi.target_user_id = ? AND hi.used = 0
+             AND h.deleted_at IS NULL
              AND hi.token_hash = ?""",
         (session["user_id"], _hash_invite_token(code)),
     )
@@ -526,31 +537,34 @@ def cmd_leave_household(args) -> None:
             "DELETE FROM members WHERE user_id = ? AND household_id = ?",
             (session["user_id"], household_id),
         )
-        household_deleted = _delete_household_if_empty(household_id, conn=conn)
-
-        if not household_deleted:
+        record(
+            household_id,
+            session["user_id"],
+            "membership.leave",
+            {"username": session["username"], "chore_assignments_cleared": True},
+            conn=conn,
+        )
+        household_deleted = _dissolve_household_if_empty(household_id, session["user_id"], conn=conn)
+        if household_deleted:
             record(
                 household_id,
                 session["user_id"],
-                "membership.leave",
-                {"username": session["username"], "chore_assignments_cleared": True},
+                "household.deleted",
+                {"name": household_name, "reason": "last_member_left"},
                 conn=conn,
             )
-            # Note: when household_deleted is True, the audit log is deleted
-            # along with the household in the same transaction, so there is
-            # nowhere to record a household.deleted event.
-            if promoted_username is not None and membership["role"] == "admin":
-                record(
-                    household_id,
-                    session["user_id"],
-                    "membership.promote",
-                    {"username": promoted_username, "reason": "admin_departure"},
-                    conn=conn,
-                )
+        elif promoted_username is not None and membership["role"] == "admin":
+            record(
+                household_id,
+                session["user_id"],
+                "membership.promote",
+                {"username": promoted_username, "reason": "admin_departure"},
+                conn=conn,
+            )
 
     print(f"You left household '{household_name}'.")
     if household_deleted:
-        print(f"Household '{household_name}' had no remaining members and was deleted.")
+        print(f"Household '{household_name}' had no remaining members and was dissolved.")
     if promoted_username is not None:
         print(f"'{promoted_username}' was automatically promoted to admin.")
 
@@ -591,7 +605,7 @@ def cmd_send_invite(args) -> None:
     else:
         email = recipient.strip().lower()
 
-    row = query_one("SELECT * FROM households WHERE id = ?", (household_id,))
+    row = query_one("SELECT * FROM households WHERE id = ? AND deleted_at IS NULL", (household_id,))
     if row is None:
         print("Error: household not found.")
         return
@@ -648,7 +662,7 @@ def _resolve_household_id(session: dict, given_id: int | str | None) -> int | No
             """SELECT h.id
                FROM members m
                JOIN households h ON h.id = m.household_id
-               WHERE m.user_id = ? AND h.name = ?""",
+               WHERE m.user_id = ? AND h.name = ? AND h.deleted_at IS NULL""",
             (session["user_id"], given_name),
         )
         if row is None:
@@ -659,7 +673,7 @@ def _resolve_household_id(session: dict, given_id: int | str | None) -> int | No
         """SELECT household_id, h.name
            FROM members m
            JOIN households h ON h.id = m.household_id
-           WHERE m.user_id = ?""",
+           WHERE m.user_id = ? AND h.deleted_at IS NULL""",
         (session["user_id"],)
     )
     if not rows:
@@ -765,7 +779,7 @@ def cmd_list_households(args) -> None:
     rows = query(
         """SELECT h.id, h.name, m.role, m.joined_at
            FROM members m JOIN households h ON h.id = m.household_id
-           WHERE m.user_id = ?
+           WHERE m.user_id = ? AND h.deleted_at IS NULL
            ORDER BY m.joined_at""",
         (session["user_id"],)
     )

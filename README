@@ -255,7 +255,8 @@ Notes:
 - admins use `send-invite` to email a token to a roommate by email address or username
 - `promote` / `demote` can also be run as flat commands: `promote <username>`
 - if the sole admin leaves, the longest-standing roommate is automatically promoted
-- if the last member leaves, the household is deleted
+- if the last member leaves, the household is dissolved (soft-deleted)
+- audit entries are preserved after dissolution for accountability
 
 Chore Management
 ----------------

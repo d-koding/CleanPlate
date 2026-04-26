@@ -820,7 +820,7 @@ class TestHouseholds(cleanplateTestCase):
         )
         self.assertEqual(bob_member["role"], "admin")
 
-    def test_last_member_leave_deletes_household(self):
+    def test_last_member_leave_dissolves_household_and_preserves_audit(self):
         household = self.create_household_as_alice("Solo House")
 
         self.login_as("alice")
@@ -830,8 +830,8 @@ class TestHouseholds(cleanplateTestCase):
         )
 
         self.assertIn("You left household 'Solo House'.", out)
-        self.assertIn("was deleted", out)
-        deleted_household = db.query_one(
+        self.assertIn("was dissolved", out)
+        dissolved_household = db.query_one(
             "SELECT * FROM households WHERE id = ?",
             (household["id"],),
         )
@@ -839,8 +839,16 @@ class TestHouseholds(cleanplateTestCase):
             "SELECT * FROM members WHERE household_id = ?",
             (household["id"],),
         )
-        self.assertIsNone(deleted_household)
+        self.assertIsNotNone(dissolved_household)
+        self.assertIsNotNone(dissolved_household["deleted_at"])
+        self.assertEqual(dissolved_household["deleted_by"], self.alice_id)
         self.assertIsNone(deleted_membership)
+
+        deleted_event = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (household["id"], "household.deleted"),
+        )
+        self.assertIsNotNone(deleted_event)
 
     def test_admin_can_promote_roommate(self):
         household = self.create_household_as_alice("Role House")
@@ -1880,24 +1888,31 @@ class TestAuditCoverage(cleanplateTestCase):
         ok, msg = activity.verify_chain(self.household["id"])
         self.assertTrue(ok, msg)
 
-    def test_household_deleted_when_last_member_leaves_removes_audit_log(self):
+    def test_household_dissolved_when_last_member_leaves_preserves_audit_log(self):
         self.login_as("alice")
         self.capture_output(
             households.cmd_leave_household,
             Namespace(household="Audit House"),
         )
 
-        # Household should be gone
-        deleted = db.query_one(
+        # Household should be tombstoned (soft-deleted)
+        dissolved = db.query_one(
             "SELECT * FROM households WHERE id = ?", (self.household["id"],)
         )
-        self.assertIsNone(deleted)
+        self.assertIsNotNone(dissolved)
+        self.assertIsNotNone(dissolved["deleted_at"])
+        self.assertEqual(dissolved["deleted_by"], self.alice_id)
 
-        # Audit log should be gone with it
+        # Audit log is preserved for accountability
         entries = db.query(
             "SELECT * FROM audit_log WHERE household_id = ?", (self.household["id"],)
         )
-        self.assertEqual(len(entries), 0)
+        self.assertGreater(len(entries), 0)
+        deleted_event = db.query_one(
+            "SELECT * FROM audit_log WHERE household_id = ? AND action = ?",
+            (self.household["id"], "household.deleted"),
+        )
+        self.assertIsNotNone(deleted_event)
 
 
 # ---------------------------------------------------------------------------
